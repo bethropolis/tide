@@ -29,3 +29,9 @@ guide.md
 
 # log files
 *.log
+
+# tide build
+tide
+
+# tide cache
+tide_cache

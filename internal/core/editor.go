@@ -85,7 +85,7 @@ func (e *Editor) TriggerSyntaxHighlight() {
 		return
 	}
 
-	logger.Debugf("Triggering syntax highlighting for language: %s", lang.Name())
+	// logger.Debugf("Triggering syntax highlighting for language: %s", lang.Name())
 
 	// Run highlighting (currently synchronous and non-incremental)
 	// TODO: Make this asynchronous in a background goroutine later
