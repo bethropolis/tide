@@ -6,10 +6,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"unicode/utf8"
 
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types" // Import types instead of core
 )
 
@@ -64,8 +64,6 @@ func (sb *SliceBuffer) Load(filePath string) error {
 	sb.filePath = filePath
 	return nil
 }
-
-
 
 // Lines implementation (no changes)
 func (sb *SliceBuffer) Lines() [][]byte {
@@ -129,7 +127,6 @@ func (sb *SliceBuffer) FilePath() string {
 	return sb.filePath
 }
 
-
 // --- Buffer Modification Methods ---
 
 // validateAndGetByteOffsets validates start and end positions and returns their byte offsets.
@@ -161,34 +158,32 @@ func (sb *SliceBuffer) validateAndGetByteOffsets(start, end types.Position) (vSt
 		}
 	}
 
-
 	return vStart, vEnd, startOffset, endOffset, nil
 }
 
 // validatePositionOnLine is a helper to get byte offset for a column on a specific line.
 func (sb *SliceBuffer) validatePositionOnLine(col int, lineIndex int) (validCol int, byteOffset int, err error) {
-    if lineIndex < 0 || lineIndex >= len(sb.lines) {
-        return 0, 0, fmt.Errorf("line index %d out of bounds", lineIndex)
-    }
-    currentLine := sb.lines[lineIndex]
-    byteOff := 0
-    runeCount := 0
-    for i := 0; i < len(currentLine); {
-        if runeCount == col {
-            break
-        }
-        _, size := utf8.DecodeRune(currentLine[i:])
-        byteOff += size
-        runeCount++
-        i += size
-    }
-    if runeCount < col {
-        col = runeCount
-        byteOff = len(currentLine)
-    }
-    return col, byteOff, nil
+	if lineIndex < 0 || lineIndex >= len(sb.lines) {
+		return 0, 0, fmt.Errorf("line index %d out of bounds", lineIndex)
+	}
+	currentLine := sb.lines[lineIndex]
+	byteOff := 0
+	runeCount := 0
+	for i := 0; i < len(currentLine); {
+		if runeCount == col {
+			break
+		}
+		_, size := utf8.DecodeRune(currentLine[i:])
+		byteOff += size
+		runeCount++
+		i += size
+	}
+	if runeCount < col {
+		col = runeCount
+		byteOff = len(currentLine)
+	}
+	return col, byteOff, nil
 }
-
 
 // Insert inserts text at a given position. Handles single/multiple lines.
 func (sb *SliceBuffer) Insert(pos types.Position, text []byte) error {
@@ -221,12 +216,12 @@ func (sb *SliceBuffer) Insert(pos types.Position, text []byte) error {
 		}
 		newLines[len(newLines)-1] = append(newLines[len(newLines)-1], tail...)
 		// Insert the new lines
-        // Ensure we handle insertion at the very end correctly
-        if validPos.Line+1 > len(sb.lines) {
-             sb.lines = append(sb.lines, newLines...)
-        } else {
-		    sb.lines = append(sb.lines[:validPos.Line+1], append(newLines, sb.lines[validPos.Line+1:]...)...)
-        }
+		// Ensure we handle insertion at the very end correctly
+		if validPos.Line+1 > len(sb.lines) {
+			sb.lines = append(sb.lines, newLines...)
+		} else {
+			sb.lines = append(sb.lines[:validPos.Line+1], append(newLines, sb.lines[validPos.Line+1:]...)...)
+		}
 
 	} else {
 		sb.lines[validPos.Line] = append(sb.lines[validPos.Line], tail...)
@@ -234,7 +229,6 @@ func (sb *SliceBuffer) Insert(pos types.Position, text []byte) error {
 
 	return nil
 }
-
 
 // Delete removes text within a given range (start inclusive, end exclusive).
 func (sb *SliceBuffer) Delete(start, end types.Position) error {
@@ -266,12 +260,12 @@ func (sb *SliceBuffer) Delete(start, end types.Position) error {
 		}
 		// Ensure startOffset is valid
 		if startOffset > len(startLineBytes) {
-		    startOffset = len(startLineBytes)
+			startOffset = len(startLineBytes)
 		}
-        // Ensure start <= end after clamping
-        if startOffset > endOffset {
-            startOffset = endOffset
-        }
+		// Ensure start <= end after clamping
+		if startOffset > endOffset {
+			startOffset = endOffset
+		}
 
 		// Reconstruct the line by combining the part before start and the part after end
 		sb.lines[vStart.Line] = append(startLineBytes[:startOffset], startLineBytes[endOffset:]...)
@@ -294,28 +288,28 @@ func (sb *SliceBuffer) Delete(start, end types.Position) error {
 
 		// Ensure indices are valid before slicing
 		if firstLineToRemove <= lastLineToRemove && lastLineToRemove < len(sb.lines) {
-            // Check if we are deleting up to the *last* line
-            if lastLineToRemove + 1 >= len(sb.lines) {
-                // If deleting includes the last line, just truncate the slice
-                sb.lines = sb.lines[:firstLineToRemove]
-            } else {
-                // Otherwise, append the lines *after* the deleted range
-			    sb.lines = append(sb.lines[:firstLineToRemove], sb.lines[lastLineToRemove+1:]...)
-            }
+			// Check if we are deleting up to the *last* line
+			if lastLineToRemove+1 >= len(sb.lines) {
+				// If deleting includes the last line, just truncate the slice
+				sb.lines = sb.lines[:firstLineToRemove]
+			} else {
+				// Otherwise, append the lines *after* the deleted range
+				sb.lines = append(sb.lines[:firstLineToRemove], sb.lines[lastLineToRemove+1:]...)
+			}
 		} else if firstLineToRemove > lastLineToRemove {
-            // This means vStart.Line + 1 > vEnd.Line, only possible if vEnd.Line == vStart.Line
-            // This case is handled above (single line deletion). Should not happen here.
-            log.Printf("Warning: Unexpected state in multi-line delete: startLine=%d, endLine=%d", vStart.Line, vEnd.Line)
-        }
-        // If lastLineToRemove is out of bounds, it means we deleted *up to* the end, handled by the first condition.
+			// This means vStart.Line + 1 > vEnd.Line, only possible if vEnd.Line == vStart.Line
+			// This case is handled above (single line deletion). Should not happen here.
+			logger.Debugf("Warning: Unexpected state in multi-line delete: startLine=%d, endLine=%d", vStart.Line, vEnd.Line)
+		}
+		// If lastLineToRemove is out of bounds, it means we deleted *up to* the end, handled by the first condition.
 	}
 
-    // Ensure buffer always has at least one line (convention)
-    if len(sb.lines) == 0 {
-        sb.lines = [][]byte{[]byte("")}
-        // If buffer became empty, it's arguably not modified from a 'new file' state
-        // However, if it previously had content, it *is* modified. Keep sb.modified = true.
-    }
+	// Ensure buffer always has at least one line (convention)
+	if len(sb.lines) == 0 {
+		sb.lines = [][]byte{[]byte("")}
+		// If buffer became empty, it's arguably not modified from a 'new file' state
+		// However, if it previously had content, it *is* modified. Keep sb.modified = true.
+	}
 
 	return nil
 }
@@ -334,17 +328,16 @@ func (sb *SliceBuffer) validatePosition(pos types.Position) (validPos types.Posi
 		}
 	}
 
-    validLine := pos.Line // Use the potentially clamped line index
-    var validCol int
-    validCol, byteOffset, err = sb.validatePositionOnLine(pos.Col, validLine)
-    if err != nil {
-        // Should not happen if line index is clamped correctly
-        return types.Position{}, 0, err
-    }
+	validLine := pos.Line // Use the potentially clamped line index
+	var validCol int
+	validCol, byteOffset, err = sb.validatePositionOnLine(pos.Col, validLine)
+	if err != nil {
+		// Should not happen if line index is clamped correctly
+		return types.Position{}, 0, err
+	}
 
 	return types.Position{Line: validLine, Col: validCol}, byteOffset, nil
 }
-
 
 // Ensure SliceBuffer satisfies the Buffer interface
 var _ Buffer = (*SliceBuffer)(nil)

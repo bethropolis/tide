@@ -24,17 +24,19 @@ const (
 	// TODO: ActionMoveFileStart, ActionMoveFileEnd
 
 	// --- Text Manipulation ---
-	ActionInsertRune    // Requires Rune argument
-	ActionInsertNewLine // Specific action for Enter
+	ActionInsertRune         // Requires Rune argument
+	ActionInsertNewLine      // Specific action for Enter
 	ActionDeleteCharForward  // Delete key
 	ActionDeleteCharBackward // Backspace key
-	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward, ActionYank, ActionPaste
+	ActionYank               // Copy selection to clipboard
+	ActionPaste              // Insert clipboard content
+	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward
 
 	// --- Editor Mode ---
-	ActionEnterCommandMode // Special action for ':'
-	ActionExecuteCommand   // Special action for Enter in Command Mode
-	ActionCancelCommand    // Special action for Esc in Command Mode
-	ActionAppendCommand    // Special action for runes in Command Mode
+	ActionEnterCommandMode  // Special action for ':'
+	ActionExecuteCommand    // Special action for Enter in Command Mode
+	ActionCancelCommand     // Special action for Esc in Command Mode
+	ActionAppendCommand     // Special action for runes in Command Mode
 	ActionDeleteCommandChar // Special action for Backspace in Command Mode
 
 	// --- Viewport / Other ---

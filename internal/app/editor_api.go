@@ -3,9 +3,9 @@ package app
 
 import (
 	"fmt" // Keep
-	"log" // Keep for now
-
+	// Keep for now
 	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/types"
 	// No longer need direct command types here
@@ -108,7 +108,7 @@ func (api *appEditorAPI) RegisterCommand(name string, cmdFunc plugin.CommandFunc
 	// Get the mode handler via the app reference and delegate
 	if api.app == nil || api.app.GetModeHandler() == nil {
 		// This would be a programming error during setup
-		log.Printf("ERROR: appEditorAPI cannot register command '%s', app or modeHandler is nil", name)
+		logger.Debugf("ERROR: appEditorAPI cannot register command '%s', app or modeHandler is nil", name)
 		return fmt.Errorf("internal error: API cannot access command registration")
 	}
 	return api.app.GetModeHandler().RegisterCommand(name, cmdFunc) // <<< DELEGATE

@@ -3,9 +3,9 @@ package plugin
 
 import (
 	"fmt"
-	"log"
 	"sync"
 
+	"github.com/bethropolis/tide/internal/logger"
 	// "github.com/bethropolis/tide/internal/event"
 )
 
@@ -38,7 +38,7 @@ func (m *Manager) Register(plugin Plugin) error {
 	}
 
 	m.plugins[name] = plugin
-	log.Printf("Plugin Manager: Registered plugin '%s'", name)
+	logger.Debugf("Plugin Manager: Registered plugin '%s'", name)
 	return nil
 }
 
@@ -46,23 +46,23 @@ func (m *Manager) Register(plugin Plugin) error {
 // It requires the EditorAPI instance to be provided.
 func (m *Manager) InitializePlugins(api EditorAPI) {
 	m.mu.Lock() // Lock while setting API and iterating initial map
-	m.api = api   // Store the API for potential later use? Might not be needed.
+	m.api = api // Store the API for potential later use? Might not be needed.
 	pluginsToInit := make([]Plugin, 0, len(m.plugins))
 	for _, p := range m.plugins {
 		pluginsToInit = append(pluginsToInit, p)
 	}
 	m.mu.Unlock() // Unlock before calling plugin Init methods
 
-	log.Printf("Plugin Manager: Initializing %d plugins...", len(pluginsToInit))
+	logger.Debugf("Plugin Manager: Initializing %d plugins...", len(pluginsToInit))
 	for _, plugin := range pluginsToInit {
-		log.Printf("Plugin Manager: Initializing plugin '%s'...", plugin.Name())
+		logger.Debugf("Plugin Manager: Initializing plugin '%s'...", plugin.Name())
 		err := plugin.Initialize(api) // Pass the API
 		if err != nil {
 			// Log error but continue initializing other plugins? Or halt?
 			// Let's log and continue for robustness.
-			log.Printf("Plugin Manager: ERROR initializing plugin '%s': %v", plugin.Name(), err)
+			logger.Debugf("Plugin Manager: ERROR initializing plugin '%s': %v", plugin.Name(), err)
 		} else {
-			log.Printf("Plugin Manager: Successfully initialized plugin '%s'", plugin.Name())
+			logger.Debugf("Plugin Manager: Successfully initialized plugin '%s'", plugin.Name())
 		}
 	}
 }
@@ -76,12 +76,12 @@ func (m *Manager) ShutdownPlugins() {
 	}
 	m.mu.RUnlock() // Unlock before calling Shutdown
 
-	log.Printf("Plugin Manager: Shutting down %d plugins...", len(pluginsToShutdown))
+	logger.Debugf("Plugin Manager: Shutting down %d plugins...", len(pluginsToShutdown))
 	for _, plugin := range pluginsToShutdown {
-		log.Printf("Plugin Manager: Shutting down plugin '%s'...", plugin.Name())
+		logger.Debugf("Plugin Manager: Shutting down plugin '%s'...", plugin.Name())
 		err := plugin.Shutdown()
 		if err != nil {
-			log.Printf("Plugin Manager: ERROR shutting down plugin '%s': %v", plugin.Name(), err)
+			logger.Debugf("Plugin Manager: ERROR shutting down plugin '%s': %v", plugin.Name(), err)
 		}
 	}
 }

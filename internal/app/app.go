@@ -11,6 +11,7 @@ import (
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/modehandler" // Import new package
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/statusbar"
@@ -55,7 +56,7 @@ func NewApp(filePath string) (*App, error) {
 
 	loadErr := buf.Load(filePath)
 	if loadErr != nil && !errors.Is(loadErr, errors.New("file does not exist")) {
-		log.Printf("Warning: error loading file '%s': %v", filePath, loadErr)
+		logger.Debugf("Warning: error loading file '%s': %v", filePath, loadErr)
 	}
 
 	editor := core.NewEditor(buf)
@@ -64,6 +65,9 @@ func NewApp(filePath string) (*App, error) {
 	eventManager := event.NewManager()
 	pluginManager := plugin.NewManager()
 	quitChan := make(chan struct{})
+
+	// Set event manager in editor so it can dispatch events
+	editor.SetEventManager(eventManager)
 
 	// --- Create Mode Handler ---
 	modeHandlerCfg := modehandler.Config{
@@ -98,7 +102,7 @@ func NewApp(filePath string) (*App, error) {
 	// --- Register Built-in Plugins ---
 	wcPlugin := wordcount.New()
 	if err := pluginManager.Register(wcPlugin); err != nil {
-		log.Printf("Failed to register WordCount plugin: %v", err)
+		logger.Debugf("Failed to register WordCount plugin: %v", err)
 	}
 	// Register other plugins here...
 

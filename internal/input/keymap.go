@@ -55,6 +55,8 @@ func (p *InputProcessor) loadDefaultBindings() {
 	ctrlMap[tcell.KeyCtrlS] = ActionSave
 	// Add more Ctrl bindings here, e.g., Ctrl+Q for ForceQuit?
 	ctrlMap[tcell.KeyCtrlQ] = ActionForceQuit // Example force quit
+	ctrlMap[tcell.KeyCtrlY] = ActionYank      // Add Yank binding
+	ctrlMap[tcell.KeyCtrlP] = ActionPaste     // Add Paste binding
 
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
@@ -65,52 +67,45 @@ func (p *InputProcessor) loadDefaultBindings() {
 }
 
 // ProcessEvent takes a tcell key event and returns the corresponding ActionEvent.
-// INPUT MODE IS NOT HANDLED HERE - App decides based on mode + action.
 func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 	key := ev.Key()
 	mod := ev.Modifiers()
 	runeVal := ev.Rune()
 
-	// 1. Check Modifier + Key combinations
-	if modKeyMap, modOk := p.modKeymap[mod]; modOk {
-		if action, keyOk := modKeyMap[key]; keyOk {
-			return ActionEvent{Action: action}
+	// 1. Check Modifier + Key combinations (Ctrl+S, etc.) - Keep this
+	if mod&tcell.ModCtrl != 0 || mod&tcell.ModAlt != 0 { // Check Ctrl or Alt explicitly
+		if modKeyMap, modOk := p.modKeymap[mod]; modOk {
+			if action, keyOk := modKeyMap[key]; keyOk {
+				return ActionEvent{Action: action} // Return action WITH modifier info implicitly handled
+			}
 		}
-		// Could also check mod + rune here if needed
-	}
-	// Clear modifier if it was part of a standard key name (like tcell.KeyCtrlS itself)
-	// This prevents Ctrl+S from also being interpreted as just 's' if Ctrl map check fails
-	if key >= tcell.KeyCtrlA && key <= tcell.KeyCtrlZ {
-		mod &^= tcell.ModCtrl // Remove Ctrl modifier if the Key already implies it
-	}
-	// Similar checks for Alt if needed
-
-	// 2. Check simple Key mappings (no significant modifiers or handled above)
-	if mod == tcell.ModNone || mod == tcell.ModShift { // Allow Shift with arrows etc.
-		if action, ok := p.keymap[key]; ok {
-			// Special keys that might depend on mode
-			// Let App handle mode-specific interpretation of Esc, Enter, Backspace
-			// based on the action returned here.
-			return ActionEvent{Action: action}
+		// If Ctrl/Alt + Rune, potentially block default insert? Return Unknown for now.
+		if key == tcell.KeyRune {
+			return ActionEvent{Action: ActionUnknown}
 		}
 	}
+	// We handle Shift modifier below for specific keys
 
-	// 3. Check Rune mappings (like ':')
-	if key == tcell.KeyRune && mod == tcell.ModNone { // Only insert plain runes (no Ctrl+rune etc.)
-		if action, ok := p.runeKeymap[runeVal]; ok { // Check specific rune map first (e.g., ':')
+	// 2. Check simple Key mappings (Arrows, PgUp/Dn, Home, End, Del, Esc...)
+	// We *don't* filter out ModShift here anymore. Let the action handler decide based on Shift.
+	if action, ok := p.keymap[key]; ok {
+		// Pass the original event (including modifiers like Shift)
+		// The action handler (ModeHandler) will check ev.Modifiers()
+		return ActionEvent{Action: action} // Return the base action (e.g., ActionMoveUp)
+	}
+
+	// 3. Check Rune mappings (like ':') - Keep this
+	if key == tcell.KeyRune && mod == tcell.ModNone { // Only handle plain runes here
+		if action, ok := p.runeKeymap[runeVal]; ok {
 			return ActionEvent{Action: action, Rune: runeVal}
 		}
-		// Default: Treat as rune insertion *request*
-		// App will decide whether to insert into buffer or command line
 		return ActionEvent{Action: ActionInsertRune, Rune: runeVal}
 	}
 
-	// Handle Enter and Backspace specifically (as they weren't mapped above for runes)
-	// Let App interpret these based on mode. Return generic actions.
+	// Handle Enter (pass action, let handler decide based on mode)
 	if key == tcell.KeyEnter {
-		return ActionEvent{Action: ActionInsertNewLine} // Default intention is newline
+		return ActionEvent{Action: ActionInsertNewLine}
 	}
-	// Backspace already handled by keymap check above
 
 	// 4. No mapping found
 	return ActionEvent{Action: ActionUnknown}

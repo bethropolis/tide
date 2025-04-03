@@ -9,7 +9,7 @@ import (
 	// "github.com/bethropolis/tide/internal/core" // Might need editor state later
 	"github.com/bethropolis/tide/internal/types" // For cursor position etc.
 	"github.com/gdamore/tcell/v2"
-	// Consider "github.com/rivo/uniseg" for accurate width calculation later
+	"github.com/rivo/uniseg" // For proper Unicode width calculation
 )
 
 // Config defines the appearance and behavior of the status bar.
@@ -36,10 +36,10 @@ type StatusBar struct {
 	mu     sync.RWMutex // Protect access to text fields
 
 	// Content fields (will be updated externally)
-	filePath       string
-	cursorPos      types.Position
-	isModified     bool
-	editorMode     string // Placeholder for future modes (NORMAL, INSERT, etc.)
+	filePath   string
+	cursorPos  types.Position
+	isModified bool
+	editorMode string // Placeholder for future modes (NORMAL, INSERT, etc.)
 
 	// Temporary message state
 	tempMessage     string
@@ -83,47 +83,30 @@ func (sb *StatusBar) SetTemporaryMessage(format string, args ...interface{}) {
 	sb.tempMessageTime = time.Now()
 }
 
-// getDisplayText determines the text to render based on current state.
-func (sb *StatusBar) getDisplayText() string {
-	sb.mu.RLock() // Use read lock for accessing state
-
-	// Check if temporary message is active and not expired
-	isTempMsgActive := !sb.tempMessageTime.IsZero() && time.Since(sb.tempMessageTime) <= sb.config.MessageTimeout
-	if isTempMsgActive {
-		// Clear expired message *after* check but before returning
-        // This feels slightly wrong place, maybe clear in Draw?
-        // Let's clear it here for simplicity now.
-		// No, clearing should happen based on time passing, Draw is better.
-		msg := sb.tempMessage
-		sb.mu.RUnlock() // Unlock before returning
-		return msg
-	}
-
-    // Clear expired message if checked above and it *was* expired
-    // Moved clearing logic to Draw
-
-	// Build the default status line if no active message
+// getDefaultDisplayText builds the default status line text.
+func (sb *StatusBar) getDefaultDisplayText() string {
+	// Assumes read lock is held or not needed if called from Draw where write lock is held
 	fPath := sb.filePath
-	if fPath == "" { fPath = "[No Name]" }
-
+	if fPath == "" {
+		fPath = "[No Name]"
+	}
 	modifiedIndicator := ""
-	if sb.isModified { modifiedIndicator = " [Modified]" }
-
+	if sb.isModified {
+		modifiedIndicator = " [Modified]"
+	}
 	modeIndicator := ""
-	if sb.editorMode != "" { modeIndicator = fmt.Sprintf(" [%s]", sb.editorMode) } // Example mode
-
-	// Using RLocked values
+	if sb.editorMode != "" {
+		modeIndicator = fmt.Sprintf(" [%s]", sb.editorMode)
+	}
 	cursor := sb.cursorPos
-	text := fmt.Sprintf("%s%s%s -- Line: %d, Col: %d",
-		fPath, modifiedIndicator, modeIndicator, cursor.Line+1, cursor.Col+1)
-
-	sb.mu.RUnlock()
-	return text
+	return fmt.Sprintf("%s%s%s -- Line: %d, Col: %d", fPath, modifiedIndicator, modeIndicator, cursor.Line+1, cursor.Col+1)
 }
 
-// Draw renders the status bar onto the screen.
+// Draw renders the status bar onto the screen using visual widths.
 func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
-	if height <= 0 || width <= 0 { return }
+	if height <= 0 || width <= 0 {
+		return
+	}
 	y := height - 1 // Status bar is always the last line
 
 	sb.mu.Lock() // Lock for potential modification of tempMessageTime
@@ -140,15 +123,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
 		style = sb.config.StyleMessage
 		text = sb.tempMessage // Use the message stored when SetTemporaryMessage was called
 	} else {
-		// Build default status text (could call getDisplayText but need lock anyway)
-		fPath := sb.filePath
-		if fPath == "" { fPath = "[No Name]" }
-		modifiedIndicator := ""
-		if sb.isModified { modifiedIndicator = " [Modified]" } // TODO: Apply StyleModified to this part?
-		modeIndicator := ""
-		if sb.editorMode != "" { modeIndicator = fmt.Sprintf(" [%s]", sb.editorMode) }
-		cursor := sb.cursorPos
-		text = fmt.Sprintf("%s%s%s -- Line: %d, Col: %d", fPath, modifiedIndicator, modeIndicator, cursor.Line+1, cursor.Col+1)
+		text = sb.getDefaultDisplayText()
 		style = sb.config.StyleDefault // Use default style
 	}
 	sb.mu.Unlock() // Unlock after accessing/modifying state
@@ -159,16 +134,29 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
 		screen.SetContent(x, y, ' ', nil, style) // Use determined style
 	}
 
-	// Draw the text runes
-	// TODO: Enhance to handle different styles for parts (e.g., modified indicator)
+	// Draw text using uniseg for width calculation
+	gr := uniseg.NewGraphemes(text)
 	currentX := 0
-	for _, r := range text {
-		if currentX >= width { break }
-		// runeWidth := uniseg.Width(r) // Use later
-		runeWidth := 1
-		if currentX+runeWidth <= width {
-			screen.SetContent(currentX, y, r, nil, style)
+	for gr.Next() {
+		clusterWidth := gr.Width()
+		if currentX+clusterWidth > width {
+			break // Stop if cluster doesn't fit
 		}
-		currentX += runeWidth
+
+		runes := gr.Runes() // Get runes in the cluster
+
+		// Draw the first rune of the cluster
+		if len(runes) > 0 {
+			mainRune := runes[0]
+			var combiningRunes []rune
+			if len(runes) > 1 {
+				combiningRunes = runes[1:]
+			}
+
+			// Let tcell handle the rendering of the cluster
+			screen.SetContent(currentX, y, mainRune, combiningRunes, style)
+		}
+
+		currentX += clusterWidth // Advance by the calculated visual width
 	}
 }
