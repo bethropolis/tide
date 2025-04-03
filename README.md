@@ -25,4 +25,3 @@ go build ./cmd/tide
 ```bash
 ./tide [filename]
 ```
-# tide
