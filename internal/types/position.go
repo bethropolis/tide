@@ -9,3 +9,22 @@ type Position struct {
 	Line int
 	Col  int // Rune index
 }
+
+
+
+// --- Add Highlight Types ---
+
+// HighlightRegion defines a text range with a specific highlight type.
+type HighlightRegion struct {
+	Start Position
+	End   Position
+	Type  HighlightType
+}
+
+// HighlightType identifies the reason for highlighting.
+type HighlightType string
+
+const (
+	HighlightSearch HighlightType = "search"
+	// Add HighlightSyntax, HighlightError later
+)

@@ -4,7 +4,7 @@ package tui
 import (
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/logger"
-	"github.com/bethropolis/tide/internal/types" // Needed for Position type
+	"github.com/bethropolis/tide/internal/types" // Needed for Position type and HighlightRegion
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg"
 )
@@ -55,17 +55,19 @@ func isPositionWithin(pos, start, end types.Position) bool {
 	return true
 }
 
-// DrawBuffer draws the *visible* portion with selection highlighting.
+// DrawBuffer draws the *visible* portion with selection & search highlighting.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 	// Define styles
 	style := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
-	selectionStyle := style.Reverse(true) // Use reverse video for selection
+	selectionStyle := style.Reverse(true)                                                    // Use reverse video for selection
+	searchHighlightStyle := style.Background(tcell.ColorYellow).Foreground(tcell.ColorBlack) // Example search highlight
 
 	width, height := tuiManager.Size()
 	viewY, viewX := editor.GetViewport()
 
 	// Get normalized selection range and active status
 	selStart, selEnd, selectionActive := editor.GetSelection()
+	highlights := editor.GetHighlights() // Get search highlights from editor
 
 	statusBarHeight := 1
 	viewHeight := height - statusBarHeight
@@ -74,6 +76,16 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 	}
 
 	lines := editor.GetBuffer().Lines()
+
+	// --- Pre-calculate highlights for visible lines (Optimization) ---
+	// Create a map for quick lookup: map[lineIdx][]HighlightRegion
+	visibleHighlights := make(map[int][]types.HighlightRegion)
+	for _, h := range highlights {
+		if h.Start.Line >= viewY && h.Start.Line < viewY+viewHeight {
+			visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h)
+		}
+		// TODO: Handle highlights spanning multiple lines if necessary
+	}
 
 	for screenY := 0; screenY < viewHeight; screenY++ {
 		bufferLineIdx := screenY + viewY
@@ -84,6 +96,9 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 		lineBytes := lines[bufferLineIdx]
 		lineStr := string(lineBytes)
 		gr := uniseg.NewGraphemes(lineStr)
+
+		// Get highlights specific to this line (from pre-calculated map)
+		lineHighlights := visibleHighlights[bufferLineIdx]
 
 		currentVisualX := 0
 		currentRuneIndex := 0 // Track rune index on the line
@@ -100,11 +115,19 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 				currentStyle := style // Start with default
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
 
-				// --- Apply Selection Style ---
+				// --- Apply Search Highlight Style ---
+				// Check if currentPos is within any search highlight region for this line
+				for _, h := range lineHighlights {
+					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {
+						currentStyle = searchHighlightStyle
+						break // Apply first match found
+					}
+				}
+
+				// --- Apply Selection Style (Overrides Search Highlight) ---
 				if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
 					currentStyle = selectionStyle // Apply selection style
 				}
-				// --- TODO: Apply Syntax/Search Highlighting (could layer on top) ---
 
 				// --- Draw the Cluster ---
 				screenX := clusterVisualStart - viewX
@@ -123,9 +146,6 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 						}
 					}
 					// Use uniseg to find the width of the *current rune* being drawn
-					// to advance the visualOffsetInCluster correctly within the loop.
-					// Note: A single grapheme cluster might contain multiple runes (e.g., base char + accent)
-					// but tcell places based on the rune. Width check helps avoid overwriting.
 					runeWidth := uniseg.StringWidth(string(r))
 					if runeWidth < 1 {
 						runeWidth = 1 // Treat zero-width runes as taking one logical cell space for offset calculation
@@ -136,7 +156,6 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 
 			// --- Update positions for next cluster ---
 			currentVisualX += clusterWidth
-			// Increment rune index by the number of runes in the *whole* cluster
 			currentRuneIndex += len(clusterRunes)
 
 			if currentVisualX >= viewX+width {

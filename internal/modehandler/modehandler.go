@@ -13,7 +13,8 @@ import (
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin" // For CommandFunc type
 	"github.com/bethropolis/tide/internal/statusbar"
-	"github.com/gdamore/tcell/v2" // Needed for modifier check
+	"github.com/bethropolis/tide/internal/types" // For position
+	"github.com/gdamore/tcell/v2"                // Needed for modifier check
 )
 
 // InputMode defines the different states for user input.
@@ -22,6 +23,7 @@ type InputMode int
 const (
 	ModeNormal InputMode = iota
 	ModeCommand
+	ModeFind // Added Find mode
 	// Future: ModeInsert, ModeVisual, etc.
 )
 
@@ -37,8 +39,14 @@ type ModeHandler struct {
 	// Internal State
 	currentMode      InputMode
 	cmdBuffer        string
+	findBuffer       string                        // Buffer for typing search terms
 	commands         map[string]plugin.CommandFunc // Command registry
 	forceQuitPending bool                          // Moved from App
+
+	// Find State
+	lastSearchTerm    string
+	lastSearchForward bool            // Direction of the last explicit search
+	lastMatchPos      *types.Position // Position of the last found match (pointer to allow nil)
 }
 
 // Config holds dependencies for the ModeHandler.
@@ -57,14 +65,15 @@ func New(cfg Config) *ModeHandler {
 		panic("modehandler.New: Missing required dependencies in Config")
 	}
 	return &ModeHandler{
-		editor:         cfg.Editor,
-		inputProcessor: cfg.InputProcessor,
-		eventManager:   cfg.EventManager,
-		statusBar:      cfg.StatusBar,
-		quitSignal:     cfg.QuitSignal,
-		currentMode:    ModeNormal,
-		commands:       make(map[string]plugin.CommandFunc),
-		cmdBuffer:      "",
+		editor:            cfg.Editor,
+		inputProcessor:    cfg.InputProcessor,
+		eventManager:      cfg.EventManager,
+		statusBar:         cfg.StatusBar,
+		quitSignal:        cfg.QuitSignal,
+		currentMode:       ModeNormal,
+		commands:          make(map[string]plugin.CommandFunc),
+		cmdBuffer:         "",
+		lastSearchForward: true, // Default search direction
 	}
 }
 
@@ -84,6 +93,8 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 	case ModeCommand:
 		// Command mode usually doesn't involve selection
 		actionProcessed = mh.handleActionCommand(actionEvent) // Pass ev if needed later
+	case ModeFind:
+		actionProcessed = mh.handleActionFind(actionEvent)
 	default:
 		logger.Debugf("Warning: Unknown input mode: %v", mh.currentMode)
 		actionProcessed = false
@@ -130,6 +141,14 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 		mh.statusBar.SetTemporaryMessage(":")
 		log.Println("ModeHandler: Entering Command Mode")
 
+	case input.ActionEnterFindMode:
+		mh.editor.ClearSelection() // Clear selection when entering find mode
+		mh.currentMode = ModeFind
+		mh.findBuffer = ""
+		mh.editor.ClearHighlights() // Clear previous highlights when starting a new search
+		mh.statusBar.SetTemporaryMessage("/")
+		log.Println("ModeHandler: Entering Find Mode")
+
 	// --- Quit/Save ---
 	case input.ActionQuit:
 		if mh.editor.GetBuffer().IsModified() && !mh.forceQuitPending {
@@ -156,6 +175,25 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 		} else {
 			mh.statusBar.SetTemporaryMessage("Buffer saved to %s", savedPath)
 			mh.eventManager.Dispatch(event.TypeBufferSaved, event.BufferSavedData{FilePath: savedPath})
+		}
+
+	// --- Find Next / Previous ---
+	case input.ActionFindNext:
+		if mh.lastSearchTerm != "" {
+			// If last explicit search was backward, 'n' continues backward
+			// If last explicit search was forward, 'n' continues forward
+			mh.executeFind(mh.lastSearchForward, true) // Pass true for isSubsequent
+		} else {
+			mh.statusBar.SetTemporaryMessage("No previous search term")
+			actionProcessed = false
+		}
+	case input.ActionFindPrevious:
+		if mh.lastSearchTerm != "" {
+			// 'N' always searches in the *opposite* direction of the last explicit search
+			mh.executeFind(!mh.lastSearchForward, true) // Pass true for isSubsequent
+		} else {
+			mh.statusBar.SetTemporaryMessage("No previous search term")
+			actionProcessed = false
 		}
 
 	// --- Movement ---
@@ -302,6 +340,105 @@ func (mh *ModeHandler) handleActionCommand(actionEvent input.ActionEvent) bool {
 	}
 
 	return actionProcessed
+}
+
+// handleActionFind handles actions when in ModeFind.
+func (mh *ModeHandler) handleActionFind(actionEvent input.ActionEvent) bool {
+	actionProcessed := true
+	needsUpdate := false // Track if status bar text needs update
+
+	switch actionEvent.Action {
+	case input.ActionInsertRune: // Append to find buffer
+		mh.findBuffer += string(actionEvent.Rune)
+		needsUpdate = true
+
+	case input.ActionDeleteCharBackward: // Backspace in find buffer
+		if len(mh.findBuffer) > 0 {
+			// TODO: Correct multi-byte rune handling for backspace if needed
+			mh.findBuffer = mh.findBuffer[:len(mh.findBuffer)-1]
+			needsUpdate = true
+		} else {
+			// Backspace on empty find buffer returns to Normal mode
+			mh.cancelFindMode() // Use the new helper function
+		}
+
+	case input.ActionInsertNewLine: // Enter key: Execute search
+		if mh.findBuffer != "" {
+			mh.lastSearchTerm = mh.findBuffer // Store for 'n'/'N'
+			mh.lastSearchForward = true       // Initial search is forward
+			mh.executeFind(true, false)       // Execute find (forward), not subsequent
+		} else {
+			mh.statusBar.SetTemporaryMessage("") // Clear "/" if nothing typed
+			mh.editor.ClearHighlights()          // Clear highlights if no search term
+		}
+		mh.currentMode = ModeNormal // Return to normal mode AFTER search attempt
+		mh.findBuffer = ""          // Clear buffer after storing lastSearchTerm
+
+	case input.ActionQuit: // Escape key: Cancel find
+		mh.cancelFindMode() // Use the new helper function
+
+	default:
+		// Ignore other actions like movement keys in find mode
+		actionProcessed = false
+	}
+
+	// Update status bar display if buffer changed
+	if needsUpdate && mh.currentMode == ModeFind {
+		mh.statusBar.SetTemporaryMessage("/%s", mh.findBuffer) // Show search prefix
+	}
+
+	return actionProcessed
+}
+
+// cancelFindMode centralizes logic for exiting Find mode without executing search
+func (mh *ModeHandler) cancelFindMode() {
+	mh.currentMode = ModeNormal
+	mh.findBuffer = ""
+	mh.editor.ClearHighlights() // Always clear highlights when canceling
+	mh.statusBar.SetTemporaryMessage("")
+	logger.Debugf("ModeHandler: Canceled Find Mode")
+}
+
+// executeFind performs the search and updates editor state.
+// isSubsequent indicates if this is an n/N navigation after initial search.
+func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
+	if mh.lastSearchTerm == "" {
+		mh.statusBar.SetTemporaryMessage("No search term")
+		return
+	}
+
+	// Start search from current cursor pos + direction offset
+	startPos := mh.editor.GetCursor()
+
+	if isSubsequent && mh.lastMatchPos != nil {
+		// For n/N, start from last match position
+		startPos = *mh.lastMatchPos
+		// Offset depends on direction to avoid finding the same match repeatedly
+		if forward {
+			startPos.Col++ // Move one column past start of last match for forward search
+		}
+		// For backward search, the editor.Find will handle starting before startPos
+	} else if !isSubsequent {
+		// For initial search (Enter key), start from current cursor position
+		// and clear the last match position
+		mh.lastMatchPos = nil
+	}
+
+	foundPos, found := mh.editor.Find(mh.lastSearchTerm, startPos, forward)
+
+	if found {
+		mh.editor.SetCursor(foundPos)                                      // Move cursor to start of match
+		mh.editor.HighlightMatches(mh.lastSearchTerm)                      // Highlight all matches
+		mh.lastMatchPos = &foundPos                                        // Store found position
+		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm) // Show success message
+		logger.Debugf("ModeHandler: Found '%s' at %v", mh.lastSearchTerm, foundPos)
+	} else {
+		// For failed searches, clear highlights
+		mh.editor.ClearHighlights() // Clear previous highlights if not found
+		mh.lastMatchPos = nil       // Reset last match position
+		mh.statusBar.SetTemporaryMessage("Pattern not found: %s", mh.lastSearchTerm)
+		logger.Debugf("ModeHandler: Pattern not found: '%s'", mh.lastSearchTerm)
+	}
 }
 
 // executeCommand parses and runs the command in cmdBuffer.

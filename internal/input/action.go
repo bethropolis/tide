@@ -39,6 +39,12 @@ const (
 	ActionAppendCommand     // Special action for runes in Command Mode
 	ActionDeleteCommandChar // Special action for Backspace in Command Mode
 
+
+	// --- find ---
+	ActionEnterFindMode // Trigger find mode (e.g., '/')
+	ActionFindNext      // Find next occurrence (e.g., 'n')
+	ActionFindPrevious  // Find previous occurrence (e.g., 'N')
+
 	// --- Viewport / Other ---
 	// ActionScrollUp? ActionScrollDown? (Usually tied to cursor movement)
 	// ActionFind?

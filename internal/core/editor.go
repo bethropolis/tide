@@ -2,13 +2,12 @@
 package core
 
 import (
-	"fmt"
-	"log"
-	"unicode/utf8"
+	"strings"      // Needed for Find
+	"unicode/utf8" // Needed for rune handling
 
-	// Import the buffer INTERFACE definition
 	"github.com/bethropolis/tide/internal/buffer"
-	// Import the new shared types package
+	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
 )
 
@@ -20,19 +19,39 @@ type Editor struct {
 	viewWidth  int // Cached terminal width
 	viewHeight int // Cached terminal height (excluding status bar)
 	ScrollOff  int // Number of lines to keep visible above/below cursor
-	// statusMessage string
-	// statusTime    time.Time
+
+	// --- Selection State ---
+	selecting      bool           // True if selection is active
+	selectionStart types.Position // Anchor point of the selection
+	selectionEnd   types.Position // Other end of the selection (usually Cursor position)
+
+	// Clipboard State
+	clipboard    []byte         // Internal register for yank/put
+	eventManager *event.Manager // Added for dispatching events on delete etc.
+
+	// Find State
+	highlights []types.HighlightRegion // Store regions to highlight
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
 func NewEditor(buf buffer.Buffer) *Editor {
 	return &Editor{
-		buffer:    buf,
-		Cursor:    types.Position{Line: 0, Col: 0},
-		ViewportY: 0,
-		ViewportX: 0,
-		ScrollOff: 3, // Default scroll-off value (can be configured later)
+		buffer:         buf,
+		Cursor:         types.Position{Line: 0, Col: 0},
+		ViewportY:      0,
+		ViewportX:      0,
+		ScrollOff:      3,                                 // Default scroll-off value (can be configured later)
+		selecting:      false,                             // Start with no selection
+		selectionStart: types.Position{Line: -1, Col: -1}, // Invalid position indicates no anchor
+		selectionEnd:   types.Position{Line: -1, Col: -1},
+		clipboard:      nil,                              // Initialize clipboard as nil
+		highlights:     make([]types.HighlightRegion, 0), // Initialize highlights slice
 	}
+}
+
+// SetEventManager sets the event manager for dispatching events
+func (e *Editor) SetEventManager(mgr *event.Manager) {
+	e.eventManager = mgr
 }
 
 // SetViewSize updates the cached view dimensions. Called on resize or before drawing.
@@ -63,7 +82,7 @@ func (e *Editor) GetBuffer() buffer.Buffer {
 }
 
 // GetCursor returns the current cursor position.
-func (e *Editor) GetCursor() types.Position { // Return types.Position
+func (e *Editor) GetCursor() types.Position {
 	return e.Cursor
 }
 
@@ -79,98 +98,7 @@ func (e *Editor) GetViewport() (int, int) {
 	return e.ViewportY, e.ViewportX
 }
 
-func (e *Editor) InsertRune(r rune) error {
-	runeBytes := make([]byte, utf8.RuneLen(r))
-	utf8.EncodeRune(runeBytes, r)
-
-	currentPos := e.Cursor
-	err := e.buffer.Insert(currentPos, runeBytes)
-	if err != nil {
-		return err
-	}
-
-	// Move cursor forward
-	if r == '\n' {
-		e.Cursor.Line++
-		e.Cursor.Col = 0
-	} else {
-		e.Cursor.Col++
-	}
-
-	// Ensure cursor remains visible after insertion/movement
-	e.ScrollToCursor()
-	return nil
-}
-
-// InsertNewLine inserts a newline and scrolls.
-func (e *Editor) InsertNewLine() error {
-	// InsertRune handles the scroll now
-	return e.InsertRune('\n')
-}
-
-func (e *Editor) DeleteBackward() error {
-	start := e.Cursor
-	end := e.Cursor
-
-	if e.Cursor.Col > 0 {
-		start.Col--
-	} else if e.Cursor.Line > 0 {
-		start.Line--
-		prevLineBytes, err := e.buffer.Line(start.Line)
-		if err != nil {
-			return fmt.Errorf("cannot get previous line %d: %w", start.Line, err)
-		}
-		start.Col = utf8.RuneCount(prevLineBytes)
-	} else {
-		return nil
-	}
-
-	err := e.buffer.Delete(start, end)
-	if err != nil {
-		return fmt.Errorf("buffer delete failed: %w", err)
-	}
-
-	// Cursor moves to the 'start' position
-	e.Cursor = start
-	// Ensure cursor is visible after deletion/movement
-	e.ScrollToCursor()
-	return nil
-}
-
-// DeleteForward deletes and scrolls if needed.
-func (e *Editor) DeleteForward() error {
-	start := e.Cursor
-	end := e.Cursor
-
-	lineBytes, err := e.buffer.Line(e.Cursor.Line)
-	if err != nil {
-		return fmt.Errorf("cannot get current line %d: %w", e.Cursor.Line, err)
-	}
-	lineRuneCount := utf8.RuneCount(lineBytes)
-
-	if e.Cursor.Col < lineRuneCount {
-		end.Col++
-	} else if e.Cursor.Line < e.buffer.LineCount()-1 {
-		end.Line++
-		end.Col = 0
-	} else {
-		return nil
-	}
-
-	err = e.buffer.Delete(start, end)
-	if err != nil {
-		return fmt.Errorf("buffer delete failed: %w", err)
-	}
-
-	// Cursor position remains at 'start'
-	e.Cursor = start
-	// Ensure cursor is visible (though it didn't move, viewport might need adjustment if lines were merged?)
-	// Let's be safe and scroll anyway.
-	e.ScrollToCursor()
-	return nil
-}
-
-// SaveBuffer (remains the same)
+// SaveBuffer saves the buffer to disk
 func (e *Editor) SaveBuffer() error {
 	filePath := ""
 	if bufWithFP, ok := e.buffer.(interface{ FilePath() string }); ok {
@@ -179,201 +107,189 @@ func (e *Editor) SaveBuffer() error {
 
 	err := e.buffer.Save(filePath) // Pass buffer's path or let buffer handle it
 	if err != nil {
-		// log.Printf("Error saving buffer to %s: %v", filePath, err) // REMOVE LOG
 		return err // Propagate error
 	}
-	// log.Printf("Buffer saved successfully to %s.", filePath) // REMOVE LOG
 	return nil // Return nil on success
 }
 
-// MoveCursor moves the cursor AND adjusts the viewport, handling line wraps.
-func (e *Editor) MoveCursor(deltaLine, deltaCol int) {
-	currentLine := e.Cursor.Line
-	currentCol := e.Cursor.Col
-	lineCount := e.buffer.LineCount()
+// --- Find Logic ---
 
-	// --- Handle Horizontal Wrap-Around FIRST ---
-	// If deltaLine is non-zero, we are moving vertically, wrap doesn't apply here.
-	if deltaLine == 0 && lineCount > 0 {
-		if deltaCol > 0 { // Attempting to move Right
-			lineBytes, err := e.buffer.Line(currentLine)
-			// Only wrap if we successfully read the current line
-			if err == nil {
-				maxCol := utf8.RuneCount(lineBytes)
-				if currentCol >= maxCol && currentLine < lineCount-1 { // At or past EOL and not on the last line
-					e.Cursor.Line++  // Move to next line
-					e.Cursor.Col = 0 // Move to beginning of that line
-					e.ScrollToCursor()
-					return // Wrap handled
+// Find searches for a term starting from a position.
+// For forward search: starts at or after startPos
+// For backward search: searches strictly before startPos
+func (e *Editor) Find(term string, startPos types.Position, forward bool) (types.Position, bool) {
+	if term == "" {
+		return types.Position{}, false
+	}
+
+	lineCount := e.buffer.LineCount()
+	currentLine := startPos.Line
+	currentCol := startPos.Col // This is rune index
+
+	if forward {
+		// Search from startPos to end of buffer
+		for lineIdx := currentLine; lineIdx < lineCount; lineIdx++ {
+			lineBytes, err := e.buffer.Line(lineIdx)
+			if err != nil {
+				continue
+			} // Skip lines we can't read
+			lineStr := string(lineBytes)
+
+			searchStartCol := 0
+			if lineIdx == currentLine {
+				searchStartCol = currentCol // Start search from currentCol on the first line
+			}
+
+			// Convert rune column index to byte offset for strings.Index
+			startByteOffset := runeIndexToByteOffset(lineBytes, searchStartCol)
+			if startByteOffset < 0 {
+				startByteOffset = 0 // Safe fallback if conversion fails
+			}
+
+			byteIndex := strings.Index(lineStr[startByteOffset:], term)
+			if byteIndex != -1 {
+				// Found a match, calculate its rune position
+				matchByteOffset := startByteOffset + byteIndex
+				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
+			}
+		}
+		// TODO: Add wrap-around search?
+	} else {
+		// Search from startPos backward to beginning of buffer
+		for lineIdx := currentLine; lineIdx >= 0; lineIdx-- {
+			lineBytes, err := e.buffer.Line(lineIdx)
+			if err != nil {
+				continue
+			}
+			lineStr := string(lineBytes)
+
+			// For backward search on starting line, only search up to (but not including) the startPos.Col
+			searchEndByteOffset := len(lineBytes) // Default to end of line
+			if lineIdx == currentLine {
+				// On starting line, convert startPos.Col to byte offset as the end limit
+				searchEndByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
+				if searchEndByteOffset < 0 || searchEndByteOffset > len(lineBytes) {
+					searchEndByteOffset = len(lineBytes) // Safe fallback
 				}
 			}
-		} else if deltaCol < 0 { // Attempting to move Left
-			// No need to read line content for BOL check
-			if currentCol <= 0 && currentLine > 0 { // At or before BOL and not on the first line
-				e.Cursor.Line-- // Move to previous line
-				// Now read the previous line to find its end
-				prevLineBytes, err := e.buffer.Line(e.Cursor.Line)
-				if err == nil {
-					e.Cursor.Col = utf8.RuneCount(prevLineBytes) // Move to end of that line
-				} else {
-					e.Cursor.Col = 0 // Fallback if error reading prev line
-				}
-				e.ScrollToCursor()
-				return // Wrap handled
+
+			// Only search the part before the cursor on starting line
+			searchStr := lineStr[:searchEndByteOffset]
+			byteIndex := strings.LastIndex(searchStr, term) // Find last occurrence
+
+			if byteIndex != -1 {
+				// Found, calculate rune position
+				matchRuneCol := byteOffsetToRuneIndex(lineBytes, byteIndex)
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
 			}
 		}
+		// TODO: Add wrap-around search?
 	}
 
-	// --- Default Movement & Clamping (if wrap didn't happen or wasn't applicable) ---
-	targetLine := currentLine + deltaLine
-	targetCol := currentCol + deltaCol // Calculate potential column based on current
-
-	// Clamp targetLine vertically
-	if targetLine < 0 {
-		targetLine = 0
-	}
-	if lineCount == 0 {
-		targetLine = 0 // Should only be line 0 if buffer isn't empty per convention
-	} else if targetLine >= lineCount {
-		targetLine = lineCount - 1
-	}
-
-	// Clamp targetCol horizontally based on the *target* line's content
-	if targetCol < 0 {
-		targetCol = 0
-	}
-	if lineCount > 0 {
-		targetLineBytes, err := e.buffer.Line(targetLine)
-		if err == nil {
-			maxCol := utf8.RuneCount(targetLineBytes)
-			// If moving vertically (deltaLine != 0), ensure Col doesn't exceed maxCol of new line
-			// If moving horizontally (deltaCol != 0), only clamp if targetCol goes beyond maxCol
-			if targetCol > maxCol {
-				targetCol = maxCol
-			}
-		} else {
-			// Error fetching target line's content, reset column
-			targetCol = 0
-		}
-	} else {
-		targetCol = 0 // No lines in buffer
-	}
-
-	// Assign final clamped position
-	e.Cursor.Line = targetLine
-	e.Cursor.Col = targetCol
-
-	// Ensure cursor is visible after move/clamp
-	e.ScrollToCursor()
+	return types.Position{}, false // Not found
 }
 
-func (e *Editor) ScrollToCursor() {
-	if e.viewHeight <= 0 || e.viewWidth <= 0 {
-		return // Cannot scroll if view has no dimensions
+// HighlightMatches finds all occurrences of a term and stores them for highlighting.
+func (e *Editor) HighlightMatches(term string) {
+	e.ClearHighlights() // Clear previous highlights first
+	if term == "" {
+		return
 	}
 
-	// Effective scrolloff (cannot be larger than half the view height)
-	effectiveScrollOff := e.ScrollOff
-	if effectiveScrollOff*2 >= e.viewHeight {
-		if e.viewHeight > 0 {
-			effectiveScrollOff = (e.viewHeight - 1) / 2 // Max half the height
-		} else {
-			effectiveScrollOff = 0
-		}
-	}
-
-	// Vertical scrolling with scrolloff
-	if e.Cursor.Line < e.ViewportY+effectiveScrollOff {
-		// Cursor is within scrolloff distance from the top edge (or above)
-		e.ViewportY = e.Cursor.Line - effectiveScrollOff
-		if e.ViewportY < 0 {
-			e.ViewportY = 0 // Don't scroll past the beginning of the file
-		}
-	} else if e.Cursor.Line >= e.ViewportY+e.viewHeight-effectiveScrollOff {
-		// Cursor is within scrolloff distance from the bottom edge (or below)
-		e.ViewportY = e.Cursor.Line - e.viewHeight + 1 + effectiveScrollOff
-		// Optional: Prevent ViewportY from scrolling too far past the end?
-		// maxViewportY := e.buffer.LineCount() - e.viewHeight
-		// if maxViewportY < 0 { maxViewportY = 0 }
-		// if e.ViewportY > maxViewportY { e.ViewportY = maxViewportY }
-	}
-
-	// Horizontal scrolling (simple version, no scrolloff for now)
-	// Note: Horizontal scrolloff is less common and more complex with variable width chars
-	if e.Cursor.Col < e.ViewportX {
-		// Cursor is left of the viewport
-		e.ViewportX = e.Cursor.Col
-	} else if e.Cursor.Col >= e.ViewportX+e.viewWidth {
-		// Cursor is right of the viewport
-		e.ViewportX = e.Cursor.Col - e.viewWidth + 1
-	}
-
-	// Clamp viewport origins just in case
-	if e.ViewportY < 0 {
-		e.ViewportY = 0
-	}
-	if e.ViewportX < 0 {
-		e.ViewportX = 0
-	}
-}
-
-// --- New Navigation Methods ---
-
-// PageMove moves the cursor and viewport up or down by one page height.
-// 'deltaPages' is typically +1 (PageDown) or -1 (PageUp).
-func (e *Editor) PageMove(deltaPages int) {
-	if e.viewHeight <= 0 {
-		return // Cannot page if view has no height
-	}
-
-	// Move cursor by viewHeight * deltaPages
-	targetLine := e.Cursor.Line + (e.viewHeight * deltaPages)
-
-	// Clamp target line to buffer bounds
 	lineCount := e.buffer.LineCount()
-	if targetLine < 0 {
-		targetLine = 0
-	} else if targetLine >= lineCount {
-		targetLine = lineCount - 1
-	}
+	termRuneLen := utf8.RuneCountInString(term)
 
-	// Set cursor position directly (MoveCursor would clamp differently)
-	e.Cursor.Line = targetLine
-	// Try to maintain horizontal position (Col), clamping if necessary
-	e.MoveCursor(0, 0) // Use MoveCursor's logic to clamp Col and scroll
+	for lineIdx := 0; lineIdx < lineCount; lineIdx++ {
+		lineBytes, err := e.buffer.Line(lineIdx)
+		if err != nil {
+			continue
+		}
+		lineStr := string(lineBytes)
 
-	// Explicitly move viewport - ScrollToCursor might not jump a full page
-	e.ViewportY += (e.viewHeight * deltaPages)
-	// Clamp ViewportY after the jump
-	if e.ViewportY < 0 {
-		e.ViewportY = 0
-	}
-	maxViewportY := lineCount - e.viewHeight
-	if maxViewportY < 0 {
-		maxViewportY = 0
-	}
-	if e.ViewportY > maxViewportY {
-		e.ViewportY = maxViewportY
-	}
+		currentByteOffset := 0
+		for {
+			byteIndex := strings.Index(lineStr[currentByteOffset:], term)
+			if byteIndex == -1 {
+				break
+			} // No more matches on this line
 
-	// Final scroll check to ensure cursor visibility *after* the jump
-	e.ScrollToCursor()
+			matchStartByteOffset := currentByteOffset + byteIndex
+			matchStartCol := byteOffsetToRuneIndex(lineBytes, matchStartByteOffset)
+			matchEndCol := matchStartCol + termRuneLen // End is exclusive
+
+			e.highlights = append(e.highlights, types.HighlightRegion{
+				Start: types.Position{Line: lineIdx, Col: matchStartCol},
+				End:   types.Position{Line: lineIdx, Col: matchEndCol},
+				Type:  types.HighlightSearch,
+			})
+
+			// Advance search position past the current match
+			// Important: advance by bytes in the original string
+			matchBytes := []byte(term) // Get bytes of term for len
+			currentByteOffset = matchStartByteOffset + len(matchBytes)
+			if currentByteOffset >= len(lineBytes) {
+				break
+			} // Avoid infinite loop if match is at end
+		}
+	}
+	logger.Debugf("Editor: Added %d search highlights for '%s'", len(e.highlights), term)
 }
 
-// Home moves the cursor to the beginning of the current line (column 0).
-func (e *Editor) Home() {
-	e.Cursor.Col = 0
-	e.ScrollToCursor() // Ensure viewport adjusts if needed
+// ClearHighlights removes all highlight regions.
+func (e *Editor) ClearHighlights() {
+	if len(e.highlights) > 0 {
+		logger.Debugf("Editor: Clearing %d highlights", len(e.highlights))
+		e.highlights = make([]types.HighlightRegion, 0)
+	}
 }
 
-// End moves the cursor to the end of the current line.
-func (e *Editor) End() {
-	lineBytes, err := e.buffer.Line(e.Cursor.Line)
-	if err != nil {
-		log.Printf("Error getting line %d for End key: %v", e.Cursor.Line, err)
-		e.Cursor.Col = 0 // Fallback to beginning
-	} else {
-		e.Cursor.Col = utf8.RuneCount(lineBytes) // Move to position *after* last rune
+// GetHighlights returns the current highlight regions (for drawing).
+func (e *Editor) GetHighlights() []types.HighlightRegion {
+	return e.highlights
+}
+
+// --- Helper functions for rune/byte offset conversion ---
+
+// runeIndexToByteOffset converts a rune index to a byte offset in a byte slice.
+// Returns -1 if runeIndex is out of bounds.
+func runeIndexToByteOffset(line []byte, runeIndex int) int {
+	if runeIndex <= 0 {
+		return 0
 	}
-	e.ScrollToCursor() // Ensure viewport adjusts
+	byteOffset := 0
+	currentRune := 0
+	for byteOffset < len(line) {
+		if currentRune == runeIndex {
+			return byteOffset
+		}
+		_, size := utf8.DecodeRune(line[byteOffset:])
+		byteOffset += size
+		currentRune++
+	}
+	if currentRune == runeIndex {
+		return len(line)
+	} // Allow index at the very end
+	return -1 // Index out of bounds
+}
+
+// byteOffsetToRuneIndex converts a byte offset to a rune index in a byte slice.
+func byteOffsetToRuneIndex(line []byte, byteOffset int) int {
+	if byteOffset <= 0 {
+		return 0
+	}
+	if byteOffset > len(line) {
+		byteOffset = len(line)
+	} // Clamp offset
+	runeIndex := 0
+	currentOffset := 0
+	for currentOffset < byteOffset {
+		_, size := utf8.DecodeRune(line[currentOffset:])
+		if currentOffset+size > byteOffset {
+			break
+		} // Don't count rune if offset is within it
+		currentOffset += size
+		runeIndex++
+	}
+	return runeIndex
 }

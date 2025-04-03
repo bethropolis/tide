@@ -60,8 +60,14 @@ func (p *InputProcessor) loadDefaultBindings() {
 
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
-	// --- Rune Mappings (Special Case for :) ---
+	// --- Rune Mappings ---
 	p.runeKeymap[':'] = ActionEnterCommandMode // Trigger command mode
+	p.runeKeymap['/'] = ActionEnterFindMode    // Map '/' to Find Mode
+
+	// --- Normal Mode Specific Keys (can be handled by ModeHandler based on action) ---
+	// Map 'n' and 'N' to their actions. ModeHandler will check mode before acting.
+	p.runeKeymap['n'] = ActionFindNext
+	p.runeKeymap['N'] = ActionFindPrevious
 
 	// Default for other runes is handled in ProcessEvent
 }
