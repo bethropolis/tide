@@ -59,8 +59,18 @@ func isPositionWithin(pos, start, end types.Position) bool {
 func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 	// Define styles
 	style := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
-	selectionStyle := style.Reverse(true)                                                    // Use reverse video for selection
-	searchHighlightStyle := style.Background(tcell.ColorYellow).Foreground(tcell.ColorBlack) // Example search highlight
+	selectionStyle := style.Reverse(true)
+	searchHighlightStyle := style.Background(tcell.ColorYellow).Foreground(tcell.ColorBlack)
+
+	// Example Syntax Styles (map style name from highlighter to tcell.Style)
+	syntaxStyles := map[string]tcell.Style{
+		"keyword":  style.Foreground(tcell.ColorBlue).Bold(true),
+		"string":   style.Foreground(tcell.ColorGreen),
+		"comment":  style.Foreground(tcell.ColorGray),
+		"type":     style.Foreground(tcell.ColorTeal),
+		"function": style.Foreground(tcell.ColorYellow),
+		// Add more styles based on query capture names
+	}
 
 	width, height := tuiManager.Size()
 	viewY, viewX := editor.GetViewport()
@@ -100,6 +110,9 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 		// Get highlights specific to this line (from pre-calculated map)
 		lineHighlights := visibleHighlights[bufferLineIdx]
 
+		// Get syntax highlights for this specific line
+		lineSyntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
+
 		currentVisualX := 0
 		currentRuneIndex := 0 // Track rune index on the line
 
@@ -115,7 +128,19 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 				currentStyle := style // Start with default
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
 
-				// --- Apply Search Highlight Style ---
+				// --- Apply Syntax Highlighting ---
+				// Find the syntax style for the current position
+				for _, synHL := range lineSyntaxHighlights {
+					// Check if current rune index is within this syntax range
+					if currentRuneIndex >= synHL.StartCol && currentRuneIndex < synHL.EndCol {
+						if styleFromTheme, ok := syntaxStyles[synHL.StyleName]; ok {
+							currentStyle = styleFromTheme
+						}
+						break // Apply first syntax highlight found for this position
+					}
+				}
+
+				// --- Apply Search Highlight Style (Overrides Syntax) ---
 				// Check if currentPos is within any search highlight region for this line
 				for _, h := range lineHighlights {
 					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {

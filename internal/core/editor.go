@@ -2,11 +2,14 @@
 package core
 
 import (
-	"strings"      // Needed for Find
+	"regexp" // Needed for regex search
+	// Needed for Find
 	"unicode/utf8" // Needed for rune handling
 
 	"github.com/bethropolis/tide/internal/buffer"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/event"
+	hl "github.com/bethropolis/tide/internal/highlighter" // Import highlighter
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
 )
@@ -31,21 +34,26 @@ type Editor struct {
 
 	// Find State
 	highlights []types.HighlightRegion // Store regions to highlight
+
+	// Syntax Highlighting State
+	highlighter      *hl.Highlighter    // Highlighter service instance
+	syntaxHighlights hl.HighlightResult // Store computed syntax highlights
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
 func NewEditor(buf buffer.Buffer) *Editor {
 	return &Editor{
-		buffer:         buf,
-		Cursor:         types.Position{Line: 0, Col: 0},
-		ViewportY:      0,
-		ViewportX:      0,
-		ScrollOff:      3,                                 // Default scroll-off value (can be configured later)
-		selecting:      false,                             // Start with no selection
-		selectionStart: types.Position{Line: -1, Col: -1}, // Invalid position indicates no anchor
-		selectionEnd:   types.Position{Line: -1, Col: -1},
-		clipboard:      nil,                              // Initialize clipboard as nil
-		highlights:     make([]types.HighlightRegion, 0), // Initialize highlights slice
+		buffer:           buf,
+		Cursor:           types.Position{Line: 0, Col: 0},
+		ViewportY:        0,
+		ViewportX:        0,
+		ScrollOff:        config.DefaultScrollOff,
+		selecting:        false,                             // Start with no selection
+		selectionStart:   types.Position{Line: -1, Col: -1}, // Invalid position indicates no anchor
+		selectionEnd:     types.Position{Line: -1, Col: -1},
+		clipboard:        nil,                              // Initialize clipboard as nil
+		highlights:       make([]types.HighlightRegion, 0), // Initialize highlights slice
+		syntaxHighlights: make(hl.HighlightResult),         // Initialize syntax map
 	}
 }
 
@@ -54,13 +62,60 @@ func (e *Editor) SetEventManager(mgr *event.Manager) {
 	e.eventManager = mgr
 }
 
+// SetHighlighter injects the highlighter service.
+func (e *Editor) SetHighlighter(h *hl.Highlighter) {
+	e.highlighter = h
+}
+
+// TriggerSyntaxHighlight requests an update of syntax highlighting.
+// Should be called after buffer load or significant modification.
+func (e *Editor) TriggerSyntaxHighlight() {
+	if e.highlighter == nil {
+		return // No highlighter configured
+	}
+	filePath := ""
+	if bufWithFP, ok := e.buffer.(interface{ FilePath() string }); ok {
+		filePath = bufWithFP.FilePath()
+	}
+
+	lang := e.highlighter.GetLanguage(filePath) // Determine language (hardcoded Go for now)
+	if lang == nil {
+		logger.Debugf("No language found/configured for: %s", filePath)
+		e.syntaxHighlights = make(hl.HighlightResult) // Clear highlights if no language
+		return
+	}
+
+	logger.Debugf("Triggering syntax highlighting for language: %s", lang.Name())
+
+	// Run highlighting (currently synchronous and non-incremental)
+	// TODO: Make this asynchronous in a background goroutine later
+	newHighlights, err := e.highlighter.HighlightBuffer(e.buffer, lang)
+	if err != nil {
+		logger.Warnf("Syntax highlighting failed: %v", err)
+		// Keep old highlights or clear them? Clear for now.
+		e.syntaxHighlights = make(hl.HighlightResult)
+	} else {
+		e.syntaxHighlights = newHighlights
+		logger.Debugf("Syntax highlighting complete.")
+		// TODO: Need to trigger redraw ONLY for visible area affected?
+		// For now, assume caller triggers full redraw.
+	}
+}
+
+// GetSyntaxHighlightsForLine returns the computed syntax styles for a given line number.
+func (e *Editor) GetSyntaxHighlightsForLine(lineNum int) []types.StyledRange {
+	// TODO: Add RWMutex for syntaxHighlights if accessed concurrently
+	if styles, ok := e.syntaxHighlights[lineNum]; ok {
+		return styles
+	}
+	return nil // No highlights for this line
+}
+
 // SetViewSize updates the cached view dimensions. Called on resize or before drawing.
 func (e *Editor) SetViewSize(width, height int) {
-	statusBarHeight := 1 // Assuming 1 line for status bar
 	e.viewWidth = width
-	// Ensure viewHeight is not negative if terminal is too small
-	if height > statusBarHeight {
-		e.viewHeight = height - statusBarHeight
+	if height > config.StatusBarHeight {
+		e.viewHeight = height - config.StatusBarHeight
 	} else {
 		e.viewHeight = 0 // No space to draw buffer
 	}
@@ -122,6 +177,13 @@ func (e *Editor) Find(term string, startPos types.Position, forward bool) (types
 		return types.Position{}, false
 	}
 
+	// Compile regex - potentially cache compiled regexes later for performance
+	re, err := regexp.Compile(term)
+	if err != nil {
+		logger.Warnf("Find: Invalid regex '%s': %v", term, err)
+		return types.Position{}, false
+	}
+
 	lineCount := e.buffer.LineCount()
 	currentLine := startPos.Line
 	currentCol := startPos.Col // This is rune index
@@ -133,23 +195,22 @@ func (e *Editor) Find(term string, startPos types.Position, forward bool) (types
 			if err != nil {
 				continue
 			} // Skip lines we can't read
-			lineStr := string(lineBytes)
 
-			searchStartCol := 0
+			searchStartByteOffset := 0
 			if lineIdx == currentLine {
-				searchStartCol = currentCol // Start search from currentCol on the first line
+				// On starting line, only search from current column onward
+				searchStartByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
+				if searchStartByteOffset < 0 {
+					searchStartByteOffset = 0 // Safe fallback
+				}
 			}
 
-			// Convert rune column index to byte offset for strings.Index
-			startByteOffset := runeIndexToByteOffset(lineBytes, searchStartCol)
-			if startByteOffset < 0 {
-				startByteOffset = 0 // Safe fallback if conversion fails
-			}
-
-			byteIndex := strings.Index(lineStr[startByteOffset:], term)
-			if byteIndex != -1 {
+			// Search in the relevant portion of the line
+			searchBytes := lineBytes[searchStartByteOffset:]
+			loc := re.FindIndex(searchBytes)
+			if loc != nil {
 				// Found a match, calculate its rune position
-				matchByteOffset := startByteOffset + byteIndex
+				matchByteOffset := searchStartByteOffset + loc[0]
 				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
 				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
 			}
@@ -162,12 +223,10 @@ func (e *Editor) Find(term string, startPos types.Position, forward bool) (types
 			if err != nil {
 				continue
 			}
-			lineStr := string(lineBytes)
 
-			// For backward search on starting line, only search up to (but not including) the startPos.Col
-			searchEndByteOffset := len(lineBytes) // Default to end of line
+			searchEndByteOffset := len(lineBytes)
 			if lineIdx == currentLine {
-				// On starting line, convert startPos.Col to byte offset as the end limit
+				// On starting line, only search up to current column
 				searchEndByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
 				if searchEndByteOffset < 0 || searchEndByteOffset > len(lineBytes) {
 					searchEndByteOffset = len(lineBytes) // Safe fallback
@@ -175,12 +234,14 @@ func (e *Editor) Find(term string, startPos types.Position, forward bool) (types
 			}
 
 			// Only search the part before the cursor on starting line
-			searchStr := lineStr[:searchEndByteOffset]
-			byteIndex := strings.LastIndex(searchStr, term) // Find last occurrence
+			searchBytes := lineBytes[:searchEndByteOffset]
 
-			if byteIndex != -1 {
-				// Found, calculate rune position
-				matchRuneCol := byteOffsetToRuneIndex(lineBytes, byteIndex)
+			// Find all matches, then get the last one
+			locs := re.FindAllIndex(searchBytes, -1)
+			if len(locs) > 0 {
+				lastMatch := locs[len(locs)-1]
+				matchByteOffset := lastMatch[0]
+				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
 				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
 			}
 		}
@@ -197,43 +258,43 @@ func (e *Editor) HighlightMatches(term string) {
 		return
 	}
 
+	re, err := regexp.Compile(term)
+	if err != nil {
+		logger.Warnf("HighlightMatches: Invalid regex '%s': %v", term, err)
+		return
+	}
+
 	lineCount := e.buffer.LineCount()
-	termRuneLen := utf8.RuneCountInString(term)
 
 	for lineIdx := 0; lineIdx < lineCount; lineIdx++ {
 		lineBytes, err := e.buffer.Line(lineIdx)
 		if err != nil {
 			continue
 		}
-		lineStr := string(lineBytes)
 
-		currentByteOffset := 0
-		for {
-			byteIndex := strings.Index(lineStr[currentByteOffset:], term)
-			if byteIndex == -1 {
-				break
-			} // No more matches on this line
+		// Find all non-overlapping matches on the line
+		locs := re.FindAllIndex(lineBytes, -1)
 
-			matchStartByteOffset := currentByteOffset + byteIndex
+		for _, loc := range locs {
+			matchStartByteOffset := loc[0]
+			matchEndByteOffset := loc[1] // Regexp gives exclusive end byte offset
+
 			matchStartCol := byteOffsetToRuneIndex(lineBytes, matchStartByteOffset)
-			matchEndCol := matchStartCol + termRuneLen // End is exclusive
+			matchEndCol := byteOffsetToRuneIndex(lineBytes, matchEndByteOffset)
 
 			e.highlights = append(e.highlights, types.HighlightRegion{
 				Start: types.Position{Line: lineIdx, Col: matchStartCol},
 				End:   types.Position{Line: lineIdx, Col: matchEndCol},
 				Type:  types.HighlightSearch,
 			})
-
-			// Advance search position past the current match
-			// Important: advance by bytes in the original string
-			matchBytes := []byte(term) // Get bytes of term for len
-			currentByteOffset = matchStartByteOffset + len(matchBytes)
-			if currentByteOffset >= len(lineBytes) {
-				break
-			} // Avoid infinite loop if match is at end
 		}
 	}
-	logger.Debugf("Editor: Added %d search highlights for '%s'", len(e.highlights), term)
+	logger.Debugf("Editor: Added %d regex search highlights for '%s'", len(e.highlights), term)
+}
+
+// HasHighlights checks if there are any active highlight regions.
+func (e *Editor) HasHighlights() bool {
+	return len(e.highlights) > 0
 }
 
 // ClearHighlights removes all highlight regions.

@@ -3,18 +3,16 @@ package modehandler
 
 import (
 	"fmt"
-	"log"
-	"strings"
+	"time"
 
-	// We need access to core components to execute actions
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
 	"github.com/bethropolis/tide/internal/logger"
-	"github.com/bethropolis/tide/internal/plugin" // For CommandFunc type
+	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/statusbar"
-	"github.com/bethropolis/tide/internal/types" // For position
-	"github.com/gdamore/tcell/v2"                // Needed for modifier check
+	"github.com/bethropolis/tide/internal/types"
+	"github.com/gdamore/tcell/v2"
 )
 
 // InputMode defines the different states for user input.
@@ -23,7 +21,7 @@ type InputMode int
 const (
 	ModeNormal InputMode = iota
 	ModeCommand
-	ModeFind // Added Find mode
+	ModeFind
 	// Future: ModeInsert, ModeVisual, etc.
 )
 
@@ -39,14 +37,19 @@ type ModeHandler struct {
 	// Internal State
 	currentMode      InputMode
 	cmdBuffer        string
-	findBuffer       string                        // Buffer for typing search terms
-	commands         map[string]plugin.CommandFunc // Command registry
-	forceQuitPending bool                          // Moved from App
+	findBuffer       string
+	commands         map[string]plugin.CommandFunc
+	forceQuitPending bool
 
 	// Find State
 	lastSearchTerm    string
-	lastSearchForward bool            // Direction of the last explicit search
-	lastMatchPos      *types.Position // Position of the last found match (pointer to allow nil)
+	lastSearchForward bool
+	lastMatchPos      *types.Position
+
+	// Leader Key State
+	leaderWaiting bool
+	leaderTimer   *time.Timer
+	leaderKey     rune
 }
 
 // Config holds dependencies for the ModeHandler.
@@ -55,16 +58,15 @@ type Config struct {
 	InputProcessor *input.InputProcessor
 	EventManager   *event.Manager
 	StatusBar      *statusbar.StatusBar
-	QuitSignal     chan<- struct{} // Write-only channel to signal quit
+	QuitSignal     chan<- struct{}
 }
 
 // New creates a new ModeHandler.
 func New(cfg Config) *ModeHandler {
 	if cfg.Editor == nil || cfg.InputProcessor == nil || cfg.EventManager == nil || cfg.StatusBar == nil || cfg.QuitSignal == nil {
-		// Should ideally return an error, but panic indicates programming error during setup
 		panic("modehandler.New: Missing required dependencies in Config")
 	}
-	return &ModeHandler{
+	mh := &ModeHandler{
 		editor:            cfg.Editor,
 		inputProcessor:    cfg.InputProcessor,
 		eventManager:      cfg.EventManager,
@@ -75,24 +77,70 @@ func New(cfg Config) *ModeHandler {
 		cmdBuffer:         "",
 		lastSearchForward: true, // Default search direction
 	}
+	mh.leaderKey = cfg.InputProcessor.GetLeaderKey() // Cache leader key
+	return mh
 }
 
 // HandleKeyEvent decides what to do based on current mode and key event.
 // Returns true if the event resulted in an action requiring redraw.
 func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
-	// Dispatch raw key event first (keep this)
+	// Dispatch raw key event first
 	mh.eventManager.Dispatch(event.TypeKeyPressed, event.KeyPressedData{KeyEvent: ev})
 
 	actionEvent := mh.inputProcessor.ProcessEvent(ev) // Get base action
 
 	var actionProcessed bool
+	needsRedraw := false
+
+	// --- Leader Sequence Handling ---
+	if mh.leaderWaiting {
+		mh.stopLeaderTimer() // Received a key, stop the timer
+
+		// Check if the current key completes a sequence
+		if actionEvent.Action == input.ActionInsertRune {
+			if seqAction, isSequence := mh.inputProcessor.IsLeaderSequenceKey(actionEvent.Rune); isSequence {
+				// Valid sequence completed
+				logger.Debugf("Leader sequence completed: Leader + %c -> Action %v", actionEvent.Rune, seqAction)
+				mh.resetLeaderState()
+				// Execute the sequence action instead of the rune insert action
+				actionProcessed = mh.executeAction(seqAction, input.ActionEvent{Action: seqAction, Rune: actionEvent.Rune}, ev)
+				needsRedraw = actionProcessed
+				return needsRedraw
+			}
+		}
+
+		// Invalid sequence key or non-rune key pressed after leader
+		logger.Debugf("Invalid leader sequence key or timeout occurred")
+		// Insert the literal leader key first
+		_ = mh.executeAction(input.ActionInsertRune, input.ActionEvent{Action: input.ActionInsertRune, Rune: mh.leaderKey}, nil)
+		mh.resetLeaderState() // Reset state after inserting literal leader
+		// Continue processing the current key normally
+	}
+
+	// --- Leader Key Pressed? ---
+	if actionEvent.Action == input.ActionInsertRune && actionEvent.Rune == mh.leaderKey && mh.currentMode == ModeNormal {
+		// Enter waiting state for leader sequence
+		mh.leaderWaiting = true
+		mh.statusBar.SetTemporaryMessage("<leader>")
+		logger.Debugf("Entered leader waiting state")
+
+		// Start timeout timer
+		mh.leaderTimer = time.AfterFunc(input.LeaderTimeout, func() {
+			// This executes in a separate goroutine
+			mh.handleLeaderTimeout()
+		})
+
+		actionProcessed = true // Starting leader sequence is an action
+		needsRedraw = true     // Show leader indicator in status bar
+		return needsRedraw     // Don't process leader key as regular insert
+	}
+
+	// --- Normal Action Processing ---
 	switch mh.currentMode {
 	case ModeNormal:
-		// Pass the original tcell event for modifier checks
-		actionProcessed = mh.handleActionNormal(actionEvent, ev)
+		actionProcessed = mh.executeAction(actionEvent.Action, actionEvent, ev)
 	case ModeCommand:
-		// Command mode usually doesn't involve selection
-		actionProcessed = mh.handleActionCommand(actionEvent) // Pass ev if needed later
+		actionProcessed = mh.handleActionCommand(actionEvent)
 	case ModeFind:
 		actionProcessed = mh.handleActionFind(actionEvent)
 	default:
@@ -100,373 +148,8 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 		actionProcessed = false
 	}
 
-	needsRedraw := actionProcessed || (actionEvent.Action == input.ActionQuit && mh.forceQuitPending)
+	needsRedraw = actionProcessed || (actionEvent.Action == input.ActionQuit && mh.forceQuitPending)
 	return needsRedraw
-}
-
-// handleActionNormal handles actions when in ModeNormal, now checks modifiers.
-func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
-	actionProcessed := true
-	originalCursor := mh.editor.GetCursor()
-	isShift := ev.Modifiers()&tcell.ModShift != 0
-
-	// --- Determine if it's a movement action ---
-	isMovementAction := false
-	switch actionEvent.Action {
-	case input.ActionMoveUp, input.ActionMoveDown, input.ActionMoveLeft, input.ActionMoveRight,
-		input.ActionMovePageUp, input.ActionMovePageDown, input.ActionMoveHome, input.ActionMoveEnd:
-		isMovementAction = true
-	}
-
-	// --- Handle Selection START / UPDATE based on Shift + Movement ---
-	if isMovementAction && isShift {
-		// If Shift is pressed during movement, start or update selection
-		mh.editor.StartOrUpdateSelection() // Anchor start if not selecting, update end always
-	}
-
-	// --- Handle Selection CLEAR based on non-Shift movement ---
-	// Only clear selection on non-shift movement *before* executing the move.
-	// Other actions (like Yank, Paste, Insert, Delete) will handle selection internally.
-	if isMovementAction && !isShift {
-		mh.editor.ClearSelection()
-	}
-
-	// --- Execute Action ---
-	switch actionEvent.Action {
-	// --- Mode Switching ---
-	case input.ActionEnterCommandMode:
-		mh.editor.ClearSelection() // Clear selection when entering command mode
-		mh.currentMode = ModeCommand
-		mh.cmdBuffer = ""
-		mh.statusBar.SetTemporaryMessage(":")
-		log.Println("ModeHandler: Entering Command Mode")
-
-	case input.ActionEnterFindMode:
-		mh.editor.ClearSelection() // Clear selection when entering find mode
-		mh.currentMode = ModeFind
-		mh.findBuffer = ""
-		mh.editor.ClearHighlights() // Clear previous highlights when starting a new search
-		mh.statusBar.SetTemporaryMessage("/")
-		log.Println("ModeHandler: Entering Find Mode")
-
-	// --- Quit/Save ---
-	case input.ActionQuit:
-		if mh.editor.GetBuffer().IsModified() && !mh.forceQuitPending {
-			mh.statusBar.SetTemporaryMessage("Unsaved changes! Press ESC again or Ctrl+Q to force quit.")
-			mh.forceQuitPending = true
-			actionProcessed = false // Needs redraw for status, but didn't quit yet
-		} else {
-			close(mh.quitSignal) // Signal app to quit
-			actionProcessed = false
-		}
-	case input.ActionForceQuit:
-		close(mh.quitSignal)
-		actionProcessed = false
-
-	case input.ActionSave:
-		mh.editor.ClearSelection() // Clear selection on save? Optional, but common.
-		err := mh.editor.SaveBuffer()
-		savedPath := mh.editor.GetBuffer().FilePath()
-		if savedPath == "" {
-			savedPath = "[No Name]"
-		}
-		if err != nil {
-			mh.statusBar.SetTemporaryMessage("Save FAILED: %v", err)
-		} else {
-			mh.statusBar.SetTemporaryMessage("Buffer saved to %s", savedPath)
-			mh.eventManager.Dispatch(event.TypeBufferSaved, event.BufferSavedData{FilePath: savedPath})
-		}
-
-	// --- Find Next / Previous ---
-	case input.ActionFindNext:
-		if mh.lastSearchTerm != "" {
-			// If last explicit search was backward, 'n' continues backward
-			// If last explicit search was forward, 'n' continues forward
-			mh.executeFind(mh.lastSearchForward, true) // Pass true for isSubsequent
-		} else {
-			mh.statusBar.SetTemporaryMessage("No previous search term")
-			actionProcessed = false
-		}
-	case input.ActionFindPrevious:
-		if mh.lastSearchTerm != "" {
-			// 'N' always searches in the *opposite* direction of the last explicit search
-			mh.executeFind(!mh.lastSearchForward, true) // Pass true for isSubsequent
-		} else {
-			mh.statusBar.SetTemporaryMessage("No previous search term")
-			actionProcessed = false
-		}
-
-	// --- Movement ---
-	// The editor methods are called. Selection start/update/clear handled above.
-	case input.ActionMoveUp:
-		mh.editor.MoveCursor(-1, 0)
-	case input.ActionMoveDown:
-		mh.editor.MoveCursor(1, 0)
-	case input.ActionMoveLeft:
-		mh.editor.MoveCursor(0, -1)
-	case input.ActionMoveRight:
-		mh.editor.MoveCursor(0, 1)
-	case input.ActionMovePageUp:
-		mh.editor.PageMove(-1)
-	case input.ActionMovePageDown:
-		mh.editor.PageMove(1)
-	case input.ActionMoveHome:
-		mh.editor.Home()
-	case input.ActionMoveEnd:
-		mh.editor.End()
-
-	// --- Yank/Paste ---
-	// These actions now depend on selection potentially existing *before* they run.
-	case input.ActionYank:
-		copied, err := mh.editor.YankSelection() // YankSelection now clears selection internally on success
-		if err != nil {
-			mh.statusBar.SetTemporaryMessage("Yank failed: %v", err)
-			logger.Debugf("Yank error: %v", err)
-			actionProcessed = false
-		} else if copied {
-			mh.statusBar.SetTemporaryMessage("Selection yanked")
-		} else {
-			mh.statusBar.SetTemporaryMessage("Nothing selected to yank")
-		}
-		// Redraw needed to show selection cleared by YankSelection
-
-	case input.ActionPaste:
-		// Paste now handles deleting selection internally if it exists
-		pasted, err := mh.editor.Paste()
-		if err != nil {
-			mh.statusBar.SetTemporaryMessage("Paste failed: %v", err)
-			logger.Debugf("Paste error: %v", err)
-			actionProcessed = false
-		} else if !pasted {
-			mh.statusBar.SetTemporaryMessage("Clipboard empty")
-			actionProcessed = false
-		}
-		// Redraw needed if paste succeeded
-
-	// --- Text Modification ---
-	// Editor methods now handle clearing/using selection internally
-	case input.ActionInsertRune:
-		err := mh.editor.InsertRune(actionEvent.Rune)
-		if err != nil {
-			logger.Debugf("Err InsertRune: %v", err)
-			actionProcessed = false
-		} else {
-			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
-		}
-	case input.ActionInsertNewLine:
-		err := mh.editor.InsertNewLine()
-		if err != nil {
-			logger.Debugf("Err InsertNewLine: %v", err)
-			actionProcessed = false
-		} else {
-			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
-		}
-	case input.ActionDeleteCharBackward:
-		err := mh.editor.DeleteBackward()
-		if err != nil {
-			logger.Debugf("Err DeleteBackward: %v", err)
-			actionProcessed = false
-		} else {
-			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
-		}
-	case input.ActionDeleteCharForward:
-		err := mh.editor.DeleteForward()
-		if err != nil {
-			logger.Debugf("Err DeleteForward: %v", err)
-			actionProcessed = false
-		} else {
-			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
-		}
-
-	case input.ActionUnknown:
-		actionProcessed = false
-	default:
-		actionProcessed = false
-	}
-
-	// --- Post-Action ---
-	// Dispatch cursor move event
-	newCursor := mh.editor.GetCursor()
-	if actionProcessed && newCursor != originalCursor {
-		mh.eventManager.Dispatch(event.TypeCursorMoved, event.CursorMovedData{NewPosition: newCursor})
-	}
-	// Reset force quit flag
-	if actionEvent.Action != input.ActionQuit && actionEvent.Action != input.ActionUnknown && actionProcessed {
-		mh.forceQuitPending = false
-	}
-
-	return actionProcessed
-}
-
-// handleActionCommand handles actions when in ModeCommand.
-func (mh *ModeHandler) handleActionCommand(actionEvent input.ActionEvent) bool {
-	actionProcessed := true
-	needsUpdate := false // Track if status bar text needs update
-
-	switch actionEvent.Action {
-	case input.ActionInsertRune:
-		mh.cmdBuffer += string(actionEvent.Rune)
-		needsUpdate = true
-
-	case input.ActionDeleteCharBackward: // Backspace
-		if len(mh.cmdBuffer) > 0 {
-			// Correct handling for multi-byte runes might be needed here
-			mh.cmdBuffer = mh.cmdBuffer[:len(mh.cmdBuffer)-1]
-			needsUpdate = true
-		} else {
-			mh.currentMode = ModeNormal
-			mh.statusBar.SetTemporaryMessage("") // Clear status explicitly
-			log.Println("ModeHandler: Exiting Command Mode via Backspace")
-		}
-
-	case input.ActionInsertNewLine: // Enter: Execute command
-		mh.executeCommand()
-		mh.currentMode = ModeNormal // Return to normal mode
-		// executeCommand sets status message, redraw is needed
-
-	case input.ActionQuit: // Escape: Cancel command
-		mh.currentMode = ModeNormal
-		mh.cmdBuffer = ""
-		mh.statusBar.SetTemporaryMessage("") // Clear status
-		log.Println("ModeHandler: Canceled Command Mode via Escape")
-
-	default:
-		actionProcessed = false // Ignore other actions
-	}
-
-	// Update status bar display if buffer changed
-	if needsUpdate && mh.currentMode == ModeCommand {
-		mh.statusBar.SetTemporaryMessage(":%s", mh.cmdBuffer)
-	}
-
-	return actionProcessed
-}
-
-// handleActionFind handles actions when in ModeFind.
-func (mh *ModeHandler) handleActionFind(actionEvent input.ActionEvent) bool {
-	actionProcessed := true
-	needsUpdate := false // Track if status bar text needs update
-
-	switch actionEvent.Action {
-	case input.ActionInsertRune: // Append to find buffer
-		mh.findBuffer += string(actionEvent.Rune)
-		needsUpdate = true
-
-	case input.ActionDeleteCharBackward: // Backspace in find buffer
-		if len(mh.findBuffer) > 0 {
-			// TODO: Correct multi-byte rune handling for backspace if needed
-			mh.findBuffer = mh.findBuffer[:len(mh.findBuffer)-1]
-			needsUpdate = true
-		} else {
-			// Backspace on empty find buffer returns to Normal mode
-			mh.cancelFindMode() // Use the new helper function
-		}
-
-	case input.ActionInsertNewLine: // Enter key: Execute search
-		if mh.findBuffer != "" {
-			mh.lastSearchTerm = mh.findBuffer // Store for 'n'/'N'
-			mh.lastSearchForward = true       // Initial search is forward
-			mh.executeFind(true, false)       // Execute find (forward), not subsequent
-		} else {
-			mh.statusBar.SetTemporaryMessage("") // Clear "/" if nothing typed
-			mh.editor.ClearHighlights()          // Clear highlights if no search term
-		}
-		mh.currentMode = ModeNormal // Return to normal mode AFTER search attempt
-		mh.findBuffer = ""          // Clear buffer after storing lastSearchTerm
-
-	case input.ActionQuit: // Escape key: Cancel find
-		mh.cancelFindMode() // Use the new helper function
-
-	default:
-		// Ignore other actions like movement keys in find mode
-		actionProcessed = false
-	}
-
-	// Update status bar display if buffer changed
-	if needsUpdate && mh.currentMode == ModeFind {
-		mh.statusBar.SetTemporaryMessage("/%s", mh.findBuffer) // Show search prefix
-	}
-
-	return actionProcessed
-}
-
-// cancelFindMode centralizes logic for exiting Find mode without executing search
-func (mh *ModeHandler) cancelFindMode() {
-	mh.currentMode = ModeNormal
-	mh.findBuffer = ""
-	mh.editor.ClearHighlights() // Always clear highlights when canceling
-	mh.statusBar.SetTemporaryMessage("")
-	logger.Debugf("ModeHandler: Canceled Find Mode")
-}
-
-// executeFind performs the search and updates editor state.
-// isSubsequent indicates if this is an n/N navigation after initial search.
-func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
-	if mh.lastSearchTerm == "" {
-		mh.statusBar.SetTemporaryMessage("No search term")
-		return
-	}
-
-	// Start search from current cursor pos + direction offset
-	startPos := mh.editor.GetCursor()
-
-	if isSubsequent && mh.lastMatchPos != nil {
-		// For n/N, start from last match position
-		startPos = *mh.lastMatchPos
-		// Offset depends on direction to avoid finding the same match repeatedly
-		if forward {
-			startPos.Col++ // Move one column past start of last match for forward search
-		}
-		// For backward search, the editor.Find will handle starting before startPos
-	} else if !isSubsequent {
-		// For initial search (Enter key), start from current cursor position
-		// and clear the last match position
-		mh.lastMatchPos = nil
-	}
-
-	foundPos, found := mh.editor.Find(mh.lastSearchTerm, startPos, forward)
-
-	if found {
-		mh.editor.SetCursor(foundPos)                                      // Move cursor to start of match
-		mh.editor.HighlightMatches(mh.lastSearchTerm)                      // Highlight all matches
-		mh.lastMatchPos = &foundPos                                        // Store found position
-		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm) // Show success message
-		logger.Debugf("ModeHandler: Found '%s' at %v", mh.lastSearchTerm, foundPos)
-	} else {
-		// For failed searches, clear highlights
-		mh.editor.ClearHighlights() // Clear previous highlights if not found
-		mh.lastMatchPos = nil       // Reset last match position
-		mh.statusBar.SetTemporaryMessage("Pattern not found: %s", mh.lastSearchTerm)
-		logger.Debugf("ModeHandler: Pattern not found: '%s'", mh.lastSearchTerm)
-	}
-}
-
-// executeCommand parses and runs the command in cmdBuffer.
-func (mh *ModeHandler) executeCommand() {
-	if mh.cmdBuffer == "" {
-		mh.statusBar.SetTemporaryMessage("")
-		return
-	}
-	cmdStr := mh.cmdBuffer // Copy buffer before clearing
-	mh.cmdBuffer = ""      // Clear buffer now
-
-	parts := strings.Fields(cmdStr)
-	cmdName := parts[0]
-	var args []string
-	if len(parts) > 1 {
-		args = parts[1:]
-	}
-
-	if cmdFunc, exists := mh.commands[cmdName]; exists {
-		logger.Debugf("ModeHandler: Executing command ':%s' with args %v", cmdName, args)
-		err := cmdFunc(args) // Execute
-		if err != nil {
-			mh.statusBar.SetTemporaryMessage("Error executing command '%s': %v", cmdName, err)
-		}
-		// Success message usually set by the command itself via API
-	} else {
-		mh.statusBar.SetTemporaryMessage("Unknown command: %s", cmdName)
-	}
 }
 
 // RegisterCommand adds a command to the registry. Called via EditorAPI.
@@ -487,6 +170,21 @@ func (mh *ModeHandler) GetCurrentMode() InputMode {
 	return mh.currentMode
 }
 
+// GetCurrentModeString returns the current input mode as a user-friendly string.
+func (mh *ModeHandler) GetCurrentModeString() string {
+	switch mh.currentMode {
+	case ModeNormal:
+		return "NORMAL"
+	case ModeCommand:
+		return "COMMAND"
+	case ModeFind:
+		return "FIND"
+	// Add other modes later
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // GetCommandBuffer returns the current command buffer content (e.g., for display).
 func (mh *ModeHandler) GetCommandBuffer() string {
 	// Only relevant in command mode, but safe to return otherwise
@@ -494,4 +192,20 @@ func (mh *ModeHandler) GetCommandBuffer() string {
 		return mh.cmdBuffer
 	}
 	return ""
+}
+
+// GetFindBuffer returns the find buffer content.
+func (mh *ModeHandler) GetFindBuffer() string {
+	if mh.currentMode == ModeFind {
+		return mh.findBuffer
+	}
+	return ""
+}
+
+// handleLeaderTimeout resets leader state after timeout and inserts the literal leader key
+func (mh *ModeHandler) handleLeaderTimeout() {
+	mh.resetLeaderState()
+	mh.statusBar.ResetTemporaryMessage()
+	// Insert the literal leader key
+	_ = mh.executeAction(input.ActionInsertRune, input.ActionEvent{Action: input.ActionInsertRune, Rune: mh.leaderKey}, nil)
 }

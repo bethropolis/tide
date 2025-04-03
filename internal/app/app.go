@@ -10,6 +10,7 @@ import (
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/highlighter" // Import highlighter
 	"github.com/bethropolis/tide/internal/input"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/modehandler" // Import new package
@@ -30,6 +31,7 @@ type App struct {
 	modeHandler   *modehandler.ModeHandler // Add ModeHandler
 	editorAPI     plugin.EditorAPI
 	filePath      string
+	highlighter   *highlighter.Highlighter // Hold highlighter instance
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -60,6 +62,11 @@ func NewApp(filePath string) (*App, error) {
 	}
 
 	editor := core.NewEditor(buf)
+
+	// Create highlighter service
+	highlighterSvc := highlighter.NewHighlighter()
+	editor.SetHighlighter(highlighterSvc)
+
 	inputProcessor := input.NewInputProcessor()
 	statusBar := statusbar.New(statusbar.DefaultConfig())
 	eventManager := event.NewManager()
@@ -88,6 +95,7 @@ func NewApp(filePath string) (*App, error) {
 		pluginManager: pluginManager,
 		modeHandler:   modeHandler,
 		filePath:      filePath,
+		highlighter:   highlighterSvc,
 		quit:          quitChan,
 		redrawRequest: make(chan struct{}, 1),
 		// Status fields remain for migration
@@ -118,6 +126,9 @@ func NewApp(filePath string) (*App, error) {
 	// --- Final Setup ---
 	width, height := tuiManager.Size()
 	editor.SetViewSize(width, height)
+
+	// Trigger initial syntax highlighting
+	editor.TriggerSyntaxHighlight()
 
 	return appInstance, nil
 }
@@ -202,10 +213,14 @@ func (a *App) updateStatusBarContent() {
 	buffer := a.editor.GetBuffer()
 	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
 	a.statusBar.SetCursorInfo(a.editor.GetCursor())
+	a.statusBar.SetEditorMode(a.modeHandler.GetCurrentModeString())
 
 	// If in command mode, ensure the command buffer is displayed via status bar's temp message
 	if a.modeHandler.GetCurrentMode() == modehandler.ModeCommand {
 		a.statusBar.SetTemporaryMessage(":%s", a.modeHandler.GetCommandBuffer())
+	} else if a.modeHandler.GetCurrentMode() == modehandler.ModeFind {
+		// Update status bar with find buffer in find mode
+		a.statusBar.SetTemporaryMessage("/%s", a.modeHandler.GetFindBuffer())
 	}
 
 	// If we have an active status message, transfer it to the status bar
@@ -235,6 +250,8 @@ func (a *App) handleBufferSavedForStatus(e event.Event) bool {
 
 func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
 	a.updateStatusBarContent()
+	a.editor.TriggerSyntaxHighlight() // Re-highlight on load
+	a.requestRedraw()                 // Request redraw after potential highlight changes
 	return false
 }
 

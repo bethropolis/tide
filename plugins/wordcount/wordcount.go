@@ -4,9 +4,12 @@ package wordcount
 import (
 	"bytes" // Needed for word counting
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bethropolis/tide/internal/plugin" // Import the plugin interface definitions
+	"github.com/bethropolis/tide/internal/types"  // For Position type
 )
 
 // Ensure WordCount implements plugin.Plugin
@@ -33,12 +36,17 @@ func (p *WordCount) Initialize(api plugin.EditorAPI) error {
 	p.api = api // Store the API
 
 	// Register the :wc command
-	// Note: Command execution isn't fully wired up yet in the core app,
-	// but we register it now according to the plan.
 	err := api.RegisterCommand("wc", p.executeWordCount)
 	if err != nil {
 		return fmt.Errorf("failed to register 'wc' command: %w", err)
 	}
+
+	// Register the :s command for substitution
+	err = api.RegisterCommand("s", p.executeSubstitute)
+	if err != nil {
+		return fmt.Errorf("failed to register 's' command: %w", err)
+	}
+
 	return nil
 }
 
@@ -65,6 +73,98 @@ func (p *WordCount) executeWordCount(args []string) error {
 	// 3. Display results in the status bar
 	resultMsg := fmt.Sprintf("Lines: %d, Words: %d, Bytes: %d", lineCount, wordCount, byteCount)
 	p.api.SetStatusMessage(resultMsg) // Use API to show message
+
+	return nil
+}
+
+// executeSubstitute implements a basic :s/old/new/g command.
+func (p *WordCount) executeSubstitute(args []string) error {
+	if p.api == nil {
+		return fmt.Errorf("wordcount plugin not initialized with API")
+	}
+
+	if len(args) == 0 {
+		return fmt.Errorf("usage: :s/pattern/replacement/[g]")
+	}
+
+	// Parse the substitute command format
+	cmdStr := args[0]
+	parts := strings.SplitN(cmdStr, "/", 4)
+	if len(parts) < 3 {
+		return fmt.Errorf("invalid format: use /pattern/replacement/[g]")
+	}
+
+	pattern := parts[1]
+	replacement := parts[2]
+	global := false
+	if len(parts) > 3 && parts[3] == "g" {
+		global = true
+	}
+
+	if pattern == "" {
+		return fmt.Errorf("search pattern cannot be empty")
+	}
+
+	// Compile regex
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("invalid regex pattern: %w", err)
+	}
+
+	// Get buffer contents
+	bufferBytes := p.api.GetBufferBytes()
+
+	// Perform the replacement
+	var resultBytes []byte
+	var replaceCount int
+
+	if global {
+		// Replace all occurrences
+		resultBytes = re.ReplaceAll(bufferBytes, []byte(replacement))
+		matches := re.FindAllIndex(bufferBytes, -1)
+		replaceCount = len(matches)
+	} else {
+		// Replace only first occurrence
+		loc := re.FindIndex(bufferBytes)
+		if loc != nil {
+			resultBytes = make([]byte, 0, len(bufferBytes))
+			resultBytes = append(resultBytes, bufferBytes[:loc[0]]...)
+			resultBytes = append(resultBytes, []byte(replacement)...)
+			resultBytes = append(resultBytes, bufferBytes[loc[1]:]...)
+			replaceCount = 1
+		} else {
+			resultBytes = bufferBytes
+			replaceCount = 0
+		}
+	}
+
+	if replaceCount > 0 {
+		// Replace buffer content
+		// First clear the buffer
+		lineCount := p.api.GetBufferLineCount()
+		if lineCount > 0 {
+			lastLineBytes, _ := p.api.GetBufferLine(lineCount - 1)
+			lastColRunes := utf8.RuneCount(lastLineBytes)
+
+			err = p.api.DeleteRange(
+				types.Position{Line: 0, Col: 0},
+				types.Position{Line: lineCount - 1, Col: lastColRunes},
+			)
+			if err != nil {
+				return fmt.Errorf("failed to clear buffer: %w", err)
+			}
+
+			// Then insert the new content
+			err = p.api.InsertText(types.Position{Line: 0, Col: 0}, resultBytes)
+			if err != nil {
+				return fmt.Errorf("failed to insert new content: %w", err)
+			}
+		}
+
+		p.api.SetStatusMessage("Replaced %d occurrence(s)", replaceCount)
+	} else {
+		p.api.SetStatusMessage("Pattern not found: %s", pattern)
+	}
 
 	return nil
 }

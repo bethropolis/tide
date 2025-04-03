@@ -17,6 +17,7 @@ type Config struct {
 	StyleDefault   tcell.Style // Default background/foreground
 	StyleModified  tcell.Style // Style for the modified indicator
 	StyleMessage   tcell.Style // Style for temporary messages
+	StyleFindInput tcell.Style // Style for find mode input
 	MessageTimeout time.Duration
 }
 
@@ -26,6 +27,7 @@ func DefaultConfig() Config {
 		StyleDefault:   tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorBlue),
 		StyleModified:  tcell.StyleDefault.Foreground(tcell.ColorYellow).Background(tcell.ColorBlue).Bold(true),
 		StyleMessage:   tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlue).Bold(true),
+		StyleFindInput: tcell.StyleDefault.Foreground(tcell.ColorGreen).Background(tcell.ColorBlue).Bold(true), // Green for find input
 		MessageTimeout: 4 * time.Second,
 	}
 }
@@ -83,6 +85,14 @@ func (sb *StatusBar) SetTemporaryMessage(format string, args ...interface{}) {
 	sb.tempMessageTime = time.Now()
 }
 
+// ResetTemporaryMessage clears any temporary message being displayed
+func (sb *StatusBar) ResetTemporaryMessage() {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	sb.tempMessage = ""
+	sb.tempMessageTime = time.Time{}
+}
+
 // getDefaultDisplayText builds the default status line text.
 func (sb *StatusBar) getDefaultDisplayText() string {
 	// Assumes read lock is held or not needed if called from Draw where write lock is held
@@ -94,12 +104,16 @@ func (sb *StatusBar) getDefaultDisplayText() string {
 	if sb.isModified {
 		modifiedIndicator = " [Modified]"
 	}
+
+	// --- Format mode indicator ---
 	modeIndicator := ""
 	if sb.editorMode != "" {
-		modeIndicator = fmt.Sprintf(" [%s]", sb.editorMode)
+		modeIndicator = fmt.Sprintf(" -- %s", sb.editorMode)
 	}
+
 	cursor := sb.cursorPos
-	return fmt.Sprintf("%s%s%s -- Line: %d, Col: %d", fPath, modifiedIndicator, modeIndicator, cursor.Line+1, cursor.Col+1)
+	return fmt.Sprintf("%s%s -- Line: %d, Col: %d%s",
+		fPath, modifiedIndicator, cursor.Line+1, cursor.Col+1, modeIndicator)
 }
 
 // Draw renders the status bar onto the screen using visual widths.
@@ -112,20 +126,29 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
 	sb.mu.Lock() // Lock for potential modification of tempMessageTime
 	// Clear expired temporary message *before* getting display text
 	isTempMsgActive := !sb.tempMessageTime.IsZero() && time.Since(sb.tempMessageTime) <= sb.config.MessageTimeout
+	isFindInput := isTempMsgActive && len(sb.tempMessage) > 0 && sb.tempMessage[0] == '/' // Check for find input
+
 	if !sb.tempMessageTime.IsZero() && !isTempMsgActive {
 		sb.tempMessage = ""
 		sb.tempMessageTime = time.Time{}
 	}
+
 	// Determine style and text based on whether a temporary message is active
 	var style tcell.Style
 	var text string
+
 	if isTempMsgActive {
-		style = sb.config.StyleMessage
-		text = sb.tempMessage // Use the message stored when SetTemporaryMessage was called
+		text = sb.tempMessage
+		if isFindInput {
+			style = sb.config.StyleFindInput // Use find input style
+		} else {
+			style = sb.config.StyleMessage // Use regular message style
+		}
 	} else {
 		text = sb.getDefaultDisplayText()
 		style = sb.config.StyleDefault // Use default style
 	}
+
 	sb.mu.Unlock() // Unlock after accessing/modifying state
 
 	// --- Actual Drawing ---

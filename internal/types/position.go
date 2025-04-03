@@ -10,8 +10,6 @@ type Position struct {
 	Col  int // Rune index
 }
 
-
-
 // --- Add Highlight Types ---
 
 // HighlightRegion defines a text range with a specific highlight type.
@@ -28,3 +26,10 @@ const (
 	HighlightSearch HighlightType = "search"
 	// Add HighlightSyntax, HighlightError later
 )
+
+// StyledRange represents a segment of text with an associated style name (for theming).
+type StyledRange struct {
+	StartCol  int    // Rune column index (inclusive)
+	EndCol    int    // Rune column index (exclusive)
+	StyleName string // Semantic style name (e.g., "keyword", "comment", "string")
+}

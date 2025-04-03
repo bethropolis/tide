@@ -2,20 +2,32 @@
 package input
 
 import (
+	"time" // For timeout timer
+
 	"github.com/gdamore/tcell/v2"
 )
+
+// DefaultLeaderKey is the default key used to initiate sequences.
+const DefaultLeaderKey = ',' // Using comma as leader key
+
+// LeaderTimeout is the duration to wait for the second key in a sequence.
+const LeaderTimeout = 500 * time.Millisecond
 
 // Keymap maps specific key events to editor actions.
 // We use a simple map for now. Could evolve to handle sequences/modes later.
 type Keymap map[tcell.Key]Action        // For special keys (Enter, Arrows, etc.)
 type RuneKeymap map[rune]Action         // For simple rune bindings (rarely needed beyond insert)
 type ModKeymap map[tcell.ModMask]Keymap // For keys combined with modifiers (Ctrl, Alt, Shift)
+// LeaderSequenceMap maps the key following the leader to an action
+type LeaderSequenceMap map[rune]Action // For keys that follow the leader key
 
 // InputProcessor translates tcell events into ActionEvents.
 type InputProcessor struct {
 	keymap     Keymap
 	runeKeymap RuneKeymap // Primarily for ActionInsertRune default
 	modKeymap  ModKeymap
+	leaderMap  LeaderSequenceMap // Maps keys following the leader
+	leaderKey  rune              // Configurable leader key
 	// TODO: Add state for multi-key sequences (e.g., leader keys)
 }
 
@@ -25,6 +37,8 @@ func NewInputProcessor() *InputProcessor {
 		keymap:     make(Keymap),
 		runeKeymap: make(RuneKeymap),
 		modKeymap:  make(ModKeymap),
+		leaderMap:  make(LeaderSequenceMap),
+		leaderKey:  DefaultLeaderKey, // Use default leader key
 	}
 	p.loadDefaultBindings()
 	return p
@@ -60,16 +74,17 @@ func (p *InputProcessor) loadDefaultBindings() {
 
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
-	// --- Rune Mappings ---
-	p.runeKeymap[':'] = ActionEnterCommandMode // Trigger command mode
-	p.runeKeymap['/'] = ActionEnterFindMode    // Map '/' to Find Mode
+	// --- Leader Key Sequences ---
+	// Map actions to keys that follow the leader key
+	p.leaderMap['/'] = ActionEnterFindMode    // <leader>/
+	p.leaderMap[':'] = ActionEnterCommandMode // <leader>:
+	p.leaderMap['n'] = ActionFindNext         // <leader>n
+	p.leaderMap['N'] = ActionFindPrevious     // <leader>N
+	p.leaderMap['w'] = ActionSave             // <leader>w (example alias for save)
+	p.leaderMap['q'] = ActionQuit             // <leader>q (example alias for quit)
 
-	// --- Normal Mode Specific Keys (can be handled by ModeHandler based on action) ---
-	// Map 'n' and 'N' to their actions. ModeHandler will check mode before acting.
-	p.runeKeymap['n'] = ActionFindNext
-	p.runeKeymap['N'] = ActionFindPrevious
-
-	// Default for other runes is handled in ProcessEvent
+	// Note: We no longer map these directly in runeKeymap,
+	// they'll default to ActionInsertRune unless preceded by leader
 }
 
 // ProcessEvent takes a tcell key event and returns the corresponding ActionEvent.
@@ -115,4 +130,15 @@ func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 
 	// 4. No mapping found
 	return ActionEvent{Action: ActionUnknown}
+}
+
+// GetLeaderKey returns the configured leader key rune.
+func (p *InputProcessor) GetLeaderKey() rune {
+	return p.leaderKey
+}
+
+// IsLeaderSequenceKey checks if a rune completes a known leader sequence.
+func (p *InputProcessor) IsLeaderSequenceKey(r rune) (Action, bool) {
+	action, exists := p.leaderMap[r]
+	return action, exists
 }
