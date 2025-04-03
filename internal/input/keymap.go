@@ -7,8 +7,8 @@ import (
 
 // Keymap maps specific key events to editor actions.
 // We use a simple map for now. Could evolve to handle sequences/modes later.
-type Keymap map[tcell.Key]Action           // For special keys (Enter, Arrows, etc.)
-type RuneKeymap map[rune]Action        // For simple rune bindings (rarely needed beyond insert)
+type Keymap map[tcell.Key]Action        // For special keys (Enter, Arrows, etc.)
+type RuneKeymap map[rune]Action         // For simple rune bindings (rarely needed beyond insert)
 type ModKeymap map[tcell.ModMask]Keymap // For keys combined with modifiers (Ctrl, Alt, Shift)
 
 // InputProcessor translates tcell events into ActionEvents.
@@ -42,7 +42,7 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.keymap[tcell.KeyPgDn] = ActionMovePageDown
 	p.keymap[tcell.KeyHome] = ActionMoveHome
 	p.keymap[tcell.KeyEnd] = ActionMoveEnd
-	p.keymap[tcell.KeyEnter] = ActionInsertNewLine
+	// p.keymap[tcell.KeyEnter] = ActionInsertNewLine // Enter is handled differently by mode now
 	p.keymap[tcell.KeyBackspace] = ActionDeleteCharBackward
 	p.keymap[tcell.KeyBackspace2] = ActionDeleteCharBackward // Often used for Backspace
 	p.keymap[tcell.KeyDelete] = ActionDeleteCharForward
@@ -58,14 +58,14 @@ func (p *InputProcessor) loadDefaultBindings() {
 
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
-	// --- Default for Runes ---
-	// Any rune not otherwise mapped triggers InsertRune
-	// We don't need to explicitly map every rune here.
-	// The ProcessEvent function handles this default case.
+	// --- Rune Mappings (Special Case for :) ---
+	p.runeKeymap[':'] = ActionEnterCommandMode // Trigger command mode
 
+	// Default for other runes is handled in ProcessEvent
 }
 
 // ProcessEvent takes a tcell key event and returns the corresponding ActionEvent.
+// INPUT MODE IS NOT HANDLED HERE - App decides based on mode + action.
 func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 	key := ev.Key()
 	mod := ev.Modifiers()
@@ -78,32 +78,39 @@ func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 		}
 		// Could also check mod + rune here if needed
 	}
-    // Clear modifier if it was part of a standard key name (like tcell.KeyCtrlS itself)
-    // This prevents Ctrl+S from also being interpreted as just 's' if Ctrl map check fails
-    if key >= tcell.KeyCtrlA && key <= tcell.KeyCtrlZ {
-        mod &^= tcell.ModCtrl // Remove Ctrl modifier if the Key already implies it
-    }
-    // Similar checks for Alt if needed
+	// Clear modifier if it was part of a standard key name (like tcell.KeyCtrlS itself)
+	// This prevents Ctrl+S from also being interpreted as just 's' if Ctrl map check fails
+	if key >= tcell.KeyCtrlA && key <= tcell.KeyCtrlZ {
+		mod &^= tcell.ModCtrl // Remove Ctrl modifier if the Key already implies it
+	}
+	// Similar checks for Alt if needed
 
 	// 2. Check simple Key mappings (no significant modifiers or handled above)
 	if mod == tcell.ModNone || mod == tcell.ModShift { // Allow Shift with arrows etc.
 		if action, ok := p.keymap[key]; ok {
-			// Handle shift modifier for specific keys if needed (e.g., Shift+Arrows for selection later)
+			// Special keys that might depend on mode
+			// Let App handle mode-specific interpretation of Esc, Enter, Backspace
+			// based on the action returned here.
 			return ActionEvent{Action: action}
 		}
 	}
 
-
-	// 3. Check Rune mappings (rarely used except for default insert)
-	// Generally, unhandled runes become ActionInsertRune
+	// 3. Check Rune mappings (like ':')
 	if key == tcell.KeyRune && mod == tcell.ModNone { // Only insert plain runes (no Ctrl+rune etc.)
-		if action, ok := p.runeKeymap[runeVal]; ok { // Check specific rune map first
+		if action, ok := p.runeKeymap[runeVal]; ok { // Check specific rune map first (e.g., ':')
 			return ActionEvent{Action: action, Rune: runeVal}
 		}
-		// Default: Treat as rune insertion
+		// Default: Treat as rune insertion *request*
+		// App will decide whether to insert into buffer or command line
 		return ActionEvent{Action: ActionInsertRune, Rune: runeVal}
 	}
 
+	// Handle Enter and Backspace specifically (as they weren't mapped above for runes)
+	// Let App interpret these based on mode. Return generic actions.
+	if key == tcell.KeyEnter {
+		return ActionEvent{Action: ActionInsertNewLine} // Default intention is newline
+	}
+	// Backspace already handled by keymap check above
 
 	// 4. No mapping found
 	return ActionEvent{Action: ActionUnknown}

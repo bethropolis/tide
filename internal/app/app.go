@@ -9,19 +9,26 @@ import (
 
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/core"
+	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
-	"github.com/bethropolis/tide/internal/statusbar" // Import statusbar
+	"github.com/bethropolis/tide/internal/modehandler" // Import new package
+	"github.com/bethropolis/tide/internal/plugin"
+	"github.com/bethropolis/tide/internal/statusbar"
 	"github.com/bethropolis/tide/internal/tui"
+	"github.com/bethropolis/tide/plugins/wordcount"
 	"github.com/gdamore/tcell/v2"
 )
 
 // App encapsulates the core components and main loop of the editor.
 type App struct {
-	tuiManager     *tui.TUI
-	editor         *core.Editor
-	inputProcessor *input.InputProcessor
-	statusBar      *statusbar.StatusBar // Use the status bar component
-	filePath       string
+	tuiManager    *tui.TUI
+	editor        *core.Editor
+	statusBar     *statusbar.StatusBar
+	eventManager  *event.Manager
+	pluginManager *plugin.Manager
+	modeHandler   *modehandler.ModeHandler // Add ModeHandler
+	editorAPI     plugin.EditorAPI
+	filePath      string
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -30,239 +37,159 @@ type App struct {
 	// Status Bar State - keeping these temporarily for migration
 	statusMessage     string
 	statusMessageTime time.Time
-	forceQuitPending  bool
 }
 
 // NewApp creates and initializes a new application instance.
 func NewApp(filePath string) (*App, error) {
-	tuiManager, err := tui.New() // TUI handles its own init
+	// --- Create Core Components ---
+	tuiManager, err := tui.New()
 	if err != nil {
 		return nil, fmt.Errorf("TUI initialization failed: %w", err)
 	}
 
-	buf := buffer.NewSliceBuffer() // Or load based on factory later
+	buf := buffer.NewSliceBuffer()
 	// Ensure buffer interface satisfies needed methods (compile-time check)
 	var _ buffer.Buffer = buf
 	var _ interface{ IsModified() bool } = buf
 	var _ interface{ FilePath() string } = buf
 
-	// Load initial file content
 	loadErr := buf.Load(filePath)
-	if loadErr != nil && !errors.Is(loadErr, errors.New("file does not exist")) { // Crude check for non-existence
-		// Maybe use os.IsNotExist(loadErr) if Load returns wrapped errors
+	if loadErr != nil && !errors.Is(loadErr, errors.New("file does not exist")) {
 		log.Printf("Warning: error loading file '%s': %v", filePath, loadErr)
 	}
 
-	editor := core.NewEditor(buf)                         // Editor initializes its state
-	inputProcessor := input.NewInputProcessor()           // Input handles its defaults
-	statusBar := statusbar.New(statusbar.DefaultConfig()) // Create status bar
+	editor := core.NewEditor(buf)
+	inputProcessor := input.NewInputProcessor()
+	statusBar := statusbar.New(statusbar.DefaultConfig())
+	eventManager := event.NewManager()
+	pluginManager := plugin.NewManager()
+	quitChan := make(chan struct{})
 
-	// Set initial view size
-	width, height := tuiManager.Size()
-	editor.SetViewSize(width, height)
+	// --- Create Mode Handler ---
+	modeHandlerCfg := modehandler.Config{
+		Editor:         editor,
+		InputProcessor: inputProcessor,
+		EventManager:   eventManager,
+		StatusBar:      statusBar,
+		QuitSignal:     quitChan,
+	}
+	modeHandler := modehandler.New(modeHandlerCfg)
 
-	return &App{
-		tuiManager:     tuiManager,
-		editor:         editor,
-		inputProcessor: inputProcessor,
-		statusBar:      statusBar, // Assign status bar instance
-		filePath:       filePath,  // Store initial path requested
-		quit:           make(chan struct{}),
-		redrawRequest:  make(chan struct{}, 1), // Buffered
+	// --- Create App Instance ---
+	appInstance := &App{
+		tuiManager:    tuiManager,
+		editor:        editor,
+		statusBar:     statusBar,
+		eventManager:  eventManager,
+		pluginManager: pluginManager,
+		modeHandler:   modeHandler,
+		filePath:      filePath,
+		quit:          quitChan,
+		redrawRequest: make(chan struct{}, 1),
 		// Status fields remain for migration
 		statusMessage:     "",
 		statusMessageTime: time.Time{},
-	}, nil
+	}
+
+	// --- Create Editor API adapter ---
+	editorAPI := newEditorAPI(appInstance)
+	appInstance.editorAPI = editorAPI
+
+	// --- Register Built-in Plugins ---
+	wcPlugin := wordcount.New()
+	if err := pluginManager.Register(wcPlugin); err != nil {
+		log.Printf("Failed to register WordCount plugin: %v", err)
+	}
+	// Register other plugins here...
+
+	// --- Subscribe Core Components (App level wiring) ---
+	eventManager.Subscribe(event.TypeCursorMoved, appInstance.handleCursorMovedForStatus)
+	eventManager.Subscribe(event.TypeBufferModified, appInstance.handleBufferModifiedForStatus)
+	eventManager.Subscribe(event.TypeBufferSaved, appInstance.handleBufferSavedForStatus)
+	eventManager.Subscribe(event.TypeBufferLoaded, appInstance.handleBufferLoadedForStatus)
+
+	// --- Initialize Plugins (triggers RegisterCommand via API) ---
+	pluginManager.InitializePlugins(editorAPI)
+
+	// --- Final Setup ---
+	width, height := tuiManager.Size()
+	editor.SetViewSize(width, height)
+
+	return appInstance, nil
 }
 
 // Run starts the application's main event and drawing loops.
-// It blocks until the application quits.
 func (a *App) Run() error {
-	// Ensure TUI is closed properly on exit
 	defer a.tuiManager.Close()
+	defer a.pluginManager.ShutdownPlugins()
 
-	// Start the event loop in a separate goroutine
-	go a.eventLoop()
+	go a.eventLoop() // Start event loop
 
-	// Initial status message and draw
+	// Initial setup
+	a.eventManager.Dispatch(event.TypeAppReady, event.AppReadyData{})
 	a.statusBar.SetTemporaryMessage("Tide Editor - Ctrl+S Save | ESC Quit")
-	a.requestRedraw() // Use method for consistency
+	a.requestRedraw()
 
-	// --- Main Drawing Loop (runs in the main goroutine) ---
+	// --- Main Drawing Loop ---
 	for {
 		select {
-		case <-a.quit:
-			// Final check for unsaved changes before logging exit
+		case <-a.quit: // Wait for quit signal from ModeHandler
+			a.eventManager.Dispatch(event.TypeAppQuit, event.AppQuitData{})
 			if a.editor.GetBuffer().IsModified() {
 				log.Println("Warning: Exited with unsaved changes.")
 			}
 			log.Println("Exiting application.")
-			return nil // Normal exit
+			return nil
 		case <-a.redrawRequest:
-			// Reset force quit flag on redraw (means another key was pressed)
-			a.forceQuitPending = false
-			// Update view size before drawing, in case of resize events
 			w, h := a.tuiManager.Size()
-			a.editor.SetViewSize(w, h) // Update editor's view size knowledge
-			// Perform drawing using functions now likely in the tui package
+			a.editor.SetViewSize(w, h)
 			a.drawEditor()
 		}
 	}
 }
 
-// eventLoop handles TUI events.
-// eventLoop handles TUI events.
+// eventLoop handles TUI events, delegating key events to ModeHandler.
 func (a *App) eventLoop() {
-	// Remove defer close(a.quit) - Already done
-
 	for {
-		event := a.tuiManager.PollEvent()
-		if event == nil {
+		ev := a.tuiManager.PollEvent()
+		if ev == nil {
 			return
-		} // Exit if screen closed
+		}
 
-		needsRedraw := false // Reset for each event
+		needsRedraw := false
 
-		switch ev := event.(type) {
+		switch eventData := ev.(type) {
 		case *tcell.EventResize:
 			a.tuiManager.GetScreen().Sync()
-			needsRedraw = true // Resize always needs redraw
+			needsRedraw = true
 
 		case *tcell.EventKey:
-			actionEvent := a.inputProcessor.ProcessEvent(ev)
-			actionProcessed := a.handleAction(actionEvent) // Delegate action handling
+			// Delegate ALL key handling to ModeHandler
+			needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
 
-			// --- Corrected needsRedraw Logic ---
-			// 1. If an action was processed successfully, we *always* need a redraw.
-			if actionProcessed {
-				needsRedraw = true
-			} else {
-				// 2. If action wasn't processed, check for specific cases needing redraw (like quit prompt)
-				if actionEvent.Action == input.ActionQuit && a.forceQuitPending {
-					needsRedraw = true // Need to redraw to show the status message
-				}
-				// Add other cases here if needed (e.g., unknown key showing a message)
-			}
-			// --- End Corrected Logic ---
-
-		// case *tcell.EventMouse: ...
-		} // End switch event.(type)
+			// case *tcell.EventMouse: ...
+		}
 
 		if needsRedraw {
 			a.requestRedraw()
 		}
-	} // End for loop
+	}
 }
 
-// handleAction processes the mapped editor action. Returns true if redraw is needed.
-func (a *App) handleAction(actionEvent input.ActionEvent) bool {
-	actionProcessed := true // Assume success unless error occurs or no action taken
-
-	switch actionEvent.Action {
-	case input.ActionQuit:
-		if a.editor.GetBuffer().IsModified() && !a.forceQuitPending {
-			a.statusBar.SetTemporaryMessage("Unsaved changes! Press ESC again or Ctrl+Q to force quit.")
-			a.forceQuitPending = true
-			actionProcessed = false // Don't mark as processed yet
-		} else {
-			// Signal quit by closing channel *here*
-			close(a.quit)
-			actionProcessed = false // No further redraw needed
-		}
-	case input.ActionForceQuit:
-		// Signal quit by closing channel *here*
-		close(a.quit)
-		actionProcessed = false
-
-	case input.ActionSave:
-		err := a.editor.SaveBuffer() // Editor handles buffer interaction
-		savedPath := a.editor.GetBuffer().FilePath()
-		if savedPath == "" {
-			savedPath = a.filePath
-		} // Fallback if somehow empty
-		if savedPath == "" {
-			savedPath = "[No Name]"
-		}
-		if err != nil {
-			a.statusBar.SetTemporaryMessage("Save FAILED: %v", err)
-		} else {
-			a.statusBar.SetTemporaryMessage("Buffer saved successfully to %s", savedPath)
-		}
-
-	// --- Cursor Movement ---
-	case input.ActionMoveUp:
-		a.editor.MoveCursor(-1, 0)
-	case input.ActionMoveDown:
-		a.editor.MoveCursor(1, 0)
-	case input.ActionMoveLeft:
-		a.editor.MoveCursor(0, -1)
-	case input.ActionMoveRight:
-		a.editor.MoveCursor(0, 1)
-	case input.ActionMovePageUp:
-		a.editor.PageMove(-1)
-	case input.ActionMovePageDown:
-		a.editor.PageMove(1)
-	case input.ActionMoveHome:
-		a.editor.Home()
-	case input.ActionMoveEnd:
-		a.editor.End()
-
-	// --- Text Manipulation ---
-	case input.ActionInsertRune:
-		err := a.editor.InsertRune(actionEvent.Rune)
-		if err != nil {
-			log.Printf("Err InsertRune: %v", err)
-			actionProcessed = false
-		}
-	case input.ActionInsertNewLine:
-		err := a.editor.InsertNewLine()
-		if err != nil {
-			log.Printf("Err InsertNewLine: %v", err)
-			actionProcessed = false
-		}
-	case input.ActionDeleteCharBackward:
-		err := a.editor.DeleteBackward()
-		if err != nil {
-			log.Printf("Err DeleteBackward: %v", err)
-			actionProcessed = false
-		}
-	case input.ActionDeleteCharForward:
-		err := a.editor.DeleteForward()
-		if err != nil {
-			log.Printf("Err DeleteForward: %v", err)
-			actionProcessed = false
-		}
-
-	case input.ActionUnknown:
-		actionProcessed = false
-	}
-
-	// Reset force quit flag if any *other* action was processed successfully
-	if actionEvent.Action != input.ActionQuit && actionEvent.Action != input.ActionUnknown && actionProcessed {
-		a.forceQuitPending = false
-	}
-
-	return actionProcessed
-}
-
-// --- Drawing and Status Management (App methods) ---
+// --- Drawing ---
 
 // drawEditor clears screen and redraws all components.
 func (a *App) drawEditor() {
-	// Update status bar content before drawing
+	// Update status bar content (might involve modehandler state)
 	a.updateStatusBarContent()
 
-	// Get screen and dimensions for drawing functions
 	screen := a.tuiManager.GetScreen()
 	width, height := a.tuiManager.Size()
 
-	// Clear and draw main components
 	a.tuiManager.Clear()
-	tui.DrawBuffer(a.tuiManager, a.editor)  // tui draws buffer
+	tui.DrawBuffer(a.tuiManager, a.editor)
 	a.statusBar.Draw(screen, width, height) // status bar draws itself
-	tui.DrawCursor(a.tuiManager, a.editor)  // tui draws cursor
-
-	// Show composite view
+	tui.DrawCursor(a.tuiManager, a.editor)
 	a.tuiManager.Show()
 }
 
@@ -272,11 +199,39 @@ func (a *App) updateStatusBarContent() {
 	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
 	a.statusBar.SetCursorInfo(a.editor.GetCursor())
 
+	// If in command mode, ensure the command buffer is displayed via status bar's temp message
+	if a.modeHandler.GetCurrentMode() == modehandler.ModeCommand {
+		a.statusBar.SetTemporaryMessage(":%s", a.modeHandler.GetCommandBuffer())
+	}
+
 	// If we have an active status message, transfer it to the status bar
 	// This code will help during transition
 	if !a.statusMessageTime.IsZero() && time.Since(a.statusMessageTime) <= 4*time.Second {
 		a.statusBar.SetTemporaryMessage(a.statusMessage)
 	}
+}
+
+// --- Event Handlers (App reacts to events) ---
+func (a *App) handleCursorMovedForStatus(e event.Event) bool {
+	if data, ok := e.Data.(event.CursorMovedData); ok {
+		a.statusBar.SetCursorInfo(data.NewPosition)
+	}
+	return false
+}
+
+func (a *App) handleBufferModifiedForStatus(e event.Event) bool {
+	a.updateStatusBarContent()
+	return false
+}
+
+func (a *App) handleBufferSavedForStatus(e event.Event) bool {
+	a.updateStatusBarContent()
+	return false
+}
+
+func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
+	a.updateStatusBarContent()
+	return false
 }
 
 // SetStatusMessage updates the status message.
@@ -294,4 +249,9 @@ func (a *App) requestRedraw() {
 	case a.redrawRequest <- struct{}{}:
 	default: // Don't block if a redraw is already pending
 	}
+}
+
+// GetModeHandler allows the API adapter to access the mode handler for command registration.
+func (a *App) GetModeHandler() *modehandler.ModeHandler {
+	return a.modeHandler
 }

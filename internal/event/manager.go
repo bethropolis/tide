@@ -54,7 +54,7 @@ func (m *Manager) Dispatch(eventType Type, data interface{}) {
 		return
 	}
 
-	log.Printf("Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(handlers)) // Debug log
+	// log.Printf("Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(handlers)) // Debug log
 
 	// Call handlers. Be careful if handlers can modify the list concurrently (they shouldn't).
 	// Creating a copy prevents issues if a handler tries to unsubscribe itself during dispatch.

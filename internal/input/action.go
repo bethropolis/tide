@@ -30,6 +30,13 @@ const (
 	ActionDeleteCharBackward // Backspace key
 	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward, ActionYank, ActionPaste
 
+	// --- Editor Mode ---
+	ActionEnterCommandMode // Special action for ':'
+	ActionExecuteCommand   // Special action for Enter in Command Mode
+	ActionCancelCommand    // Special action for Esc in Command Mode
+	ActionAppendCommand    // Special action for runes in Command Mode
+	ActionDeleteCommandChar // Special action for Backspace in Command Mode
+
 	// --- Viewport / Other ---
 	// ActionScrollUp? ActionScrollDown? (Usually tied to cursor movement)
 	// ActionFind?
