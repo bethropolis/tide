@@ -1,0 +1,181 @@
+name: Release Go Binaries
+
+# Trigger workflow on tag push or manual dispatch
+on:
+    push:
+        tags:
+            - 'v*'
+    workflow_dispatch:
+        inputs:
+            tag_name:
+                description: 'Tag name for the release (e.g., v1.0.0)'
+                required: true
+                default: 'manual-release'
+            release_name:
+                description: 'Name of the release'
+                required: false
+                default: 'Manual Release'
+
+permissions:
+    contents: write  # Required for creating releases
+
+jobs:
+    build:
+        name: Build Binaries
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                go-version: ['1.21.x']
+                platform:
+                    - { os: linux, arch: amd64 }
+                    - { os: linux, arch: arm64 }
+                    - { os: windows, arch: amd64 }
+                    - { os: darwin, arch: amd64 }
+                    - { os: darwin, arch: arm64 }
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Go
+              uses: actions/setup-go@v5
+              with:
+                    go-version: ${{ matrix.go-version }}
+
+            - name: Create directories
+              run: mkdir -p ./dist/package
+              shell: bash
+
+            - name: Build
+              env:
+                GOOS: ${{ matrix.platform.os }}
+                GOARCH: ${{ matrix.platform.arch }}
+                CGO_ENABLED: 0  # Disable CGO for static binaries
+              run: |
+                BINARY_NAME="tide"
+                OUTPUT_NAME="${BINARY_NAME}"
+                
+                # Add exe extension for Windows
+                if [ "${{ matrix.platform.os }}" = "windows" ]; then
+                    OUTPUT_NAME="${OUTPUT_NAME}.exe"
+                fi
+                
+                # Build with optimization flags
+                go build -trimpath -ldflags="-s -w" -o "./dist/${OUTPUT_NAME}" ./cmd/tide/
+                
+                # List the build directory
+                ls -la ./dist/
+              shell: bash
+
+            - name: Create Archive
+              run: |
+                BINARY_NAME="tide"
+                ARCHIVE_BASE_NAME="${BINARY_NAME}-${{ github.ref_name }}-${{ matrix.platform.os }}-${{ matrix.platform.arch }}"
+                
+                # Clear package directory to avoid mixing files from previous matrix runs
+                rm -rf ./dist/package/*
+                
+                # Copy binary and README to package directory
+                if [ "${{ matrix.platform.os }}" = "windows" ]; then
+                    cp "./dist/${BINARY_NAME}.exe" ./dist/package/
+                else
+                    cp "./dist/${BINARY_NAME}" ./dist/package/
+                fi
+                
+                # Copy README to package directory
+                cp README.md ./dist/package/ || echo "Warning: README.md not found"
+                
+                # Create different archive types based on target OS
+                if [ "${{ matrix.platform.os }}" = "windows" ]; then
+                    7z a "./dist/${ARCHIVE_BASE_NAME}.zip" "./dist/package/*"
+                else
+                    tar -czvf "./dist/${ARCHIVE_BASE_NAME}.tar.gz" -C ./dist/package .
+                fi
+                
+                # List files in dist directory for debugging
+                ls -la ./dist/
+              shell: bash
+
+            - name: Upload Artifact
+              if: matrix.platform.os != 'windows'
+              uses: actions/upload-artifact@v4
+              with:
+                name: tide-${{ matrix.platform.os }}-${{ matrix.platform.arch }}
+                path: ./dist/*.tar.gz
+                if-no-files-found: warn
+
+            - name: Upload Windows Artifact
+              if: matrix.platform.os == 'windows'
+              uses: actions/upload-artifact@v4
+              with:
+                name: tide-${{ matrix.platform.os }}-${{ matrix.platform.arch }}
+                path: ./dist/*.zip
+                if-no-files-found: warn
+
+    release:
+        name: Create Release
+        needs: build  # Wait for build job to complete
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write  # Required for release creation
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+                
+            - name: Download Artifacts
+              uses: actions/download-artifact@v4
+              with:
+                path: ./artifacts
+
+            - name: Process Artifacts for Release
+              run: |
+                # First look at the directory structure
+                echo "Initial directory structure:"
+                find ./artifacts -type f | sort
+                
+                # Create a directory for processed files
+                mkdir -p ./release-files
+                
+                # Find and move all artifact files to the release directory
+                find ./artifacts -type f -name "*.tar.gz" -o -name "*.zip" | while read file; do
+                    cp "$file" ./release-files/
+                done
+                
+                # Generate checksums for the files in release directory
+                cd ./release-files
+                echo "Files to be released:"
+                ls -la
+                
+                # Generate SHA256 checksums for all artifacts
+                sha256sum * > checksums.txt
+                cat checksums.txt
+              shell: bash
+
+            - name: Set release info
+              id: release_info
+              run: |
+                # Set tag name - use input value if manually triggered, otherwise use git ref
+                if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                    echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+                    echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
+                    echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
+                else
+                    echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+                    echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+                    echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
+                fi
+              shell: bash
+
+            - name: Create GitHub Release
+              uses: softprops/action-gh-release@v2
+              with:
+                name: ${{ steps.release_info.outputs.RELEASE_NAME }}
+                tag_name: ${{ steps.release_info.outputs.TAG_NAME }}
+                generate_release_notes: true
+                make_latest: true
+                prerelease: ${{ steps.release_info.outputs.IS_PRERELEASE }}
+                files: |
+                    ./release-files/*
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
