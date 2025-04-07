@@ -28,6 +28,8 @@ const (
 	TypeAppQuit  // Fired just before application termination begins
 
 	// Plugin specific events can be defined later or use custom data
+
+	TypeThemeChanged // Fired when the theme is changed
 )
 
 // Event is the structure passed through the event bus.

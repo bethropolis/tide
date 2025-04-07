@@ -66,8 +66,8 @@ func init() {
 
 	// --- Base Style ---
 	// Use terminal background, DevComfort foreground
-	baseStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(dcForeground)
-
+	baseStyle := tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground) // <<< CHANGE HERE
+	
 	// Populate the theme map
 	DevComfortDark = Theme{
 		Name:   "DevComfort Dark",

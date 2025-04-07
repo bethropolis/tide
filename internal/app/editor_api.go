@@ -7,13 +7,16 @@ import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
+	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
-	// No longer need direct command types here
 )
 
 // Ensure appEditorAPI implements the plugin.EditorAPI interface.
 var _ plugin.EditorAPI = (*appEditorAPI)(nil)
+
+// Verify that appEditorAPI implements the theme.ThemeAPI interface
+var _ theme.ThemeAPI = (*appEditorAPI)(nil)
 
 // appEditorAPI provides the concrete implementation of the EditorAPI interface.
 type appEditorAPI struct {
@@ -115,6 +118,17 @@ func (api *appEditorAPI) RegisterCommand(name string, cmdFunc plugin.CommandFunc
 	return api.app.GetModeHandler().RegisterCommand(name, cmdFunc) // <<< DELEGATE
 }
 
+// RegisterThemeCommand implements the theme.ThemeAPI interface
+func (api *appEditorAPI) RegisterThemeCommand(name string, cmdFunc theme.CommandFunc) error {
+	// Since theme.CommandFunc is a type alias for func([]string) error,
+	// we can delegate to the ModeHandler's RegisterCommand directly
+	if api.app == nil || api.app.GetModeHandler() == nil {
+		logger.Debugf("ERROR: appEditorAPI cannot register theme command '%s', app or modeHandler is nil", name)
+		return fmt.Errorf("internal error: API cannot access command registration")
+	}
+	return api.app.GetModeHandler().RegisterCommand(name, cmdFunc)
+}
+
 // --- Status Bar ---
 
 func (api *appEditorAPI) SetStatusMessage(format string, args ...interface{}) {
@@ -125,4 +139,34 @@ func (api *appEditorAPI) SetStatusMessage(format string, args ...interface{}) {
 // --- Theme Access ---
 func (api *appEditorAPI) GetThemeStyle(styleName string) tcell.Style {
 	return api.app.activeTheme.GetStyle(styleName)
+}
+
+// SetTheme sets the active theme by name
+func (api *appEditorAPI) SetTheme(name string) error {
+	// Get the theme from the manager
+	theme, ok := api.app.GetThemeManager().GetTheme(name)
+	if !ok {
+		return fmt.Errorf("theme '%s' not found", name)
+	}
+
+	// Set the theme in the app (which updates both the manager and global reference)
+	api.app.SetTheme(theme)
+
+	// Explicitly request a redraw immediately after theme change
+	api.app.requestRedraw()
+
+	// Log the theme change
+	logger.Debugf("Theme changed to '%s', redraw requested", name)
+
+	return nil
+}
+
+// GetTheme returns the current active theme
+func (api *appEditorAPI) GetTheme() *theme.Theme {
+	return api.app.GetTheme()
+}
+
+// ListThemes returns a list of all available theme names
+func (api *appEditorAPI) ListThemes() []string {
+	return api.app.GetThemeManager().ListThemes()
 }

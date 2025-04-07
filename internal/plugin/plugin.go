@@ -3,6 +3,7 @@ package plugin
 
 import (
 	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
@@ -48,6 +49,9 @@ type EditorAPI interface {
 
 	// --- Theme Access ---
 	GetThemeStyle(styleName string) tcell.Style // Get a style from the active theme
+	SetTheme(name string) error
+	GetTheme() *theme.Theme
+	ListThemes() []string
 
 	// --- Configuration (Future) ---
 	// GetConfigValue(key string) (interface{}, error)

@@ -10,8 +10,7 @@ import (
 	"github.com/rivo/uniseg"
 )
 
-// calculateVisualColumn computes the visual screen column width for a given rune index within a line.
-// This is a duplicate of the function in core/editor.go to avoid circular imports
+
 func calculateVisualColumn(line []byte, runeIndex int) int {
 	if runeIndex <= 0 {
 		return 0
@@ -56,83 +55,82 @@ func isPositionWithin(pos, start, end types.Position) bool {
 	return true
 }
 
+
 // DrawBuffer draws the *visible* portion using the provided theme.
 // It now takes an activeTheme argument.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) {
 
-	// Use the provided theme. If nil, log warning and use a basic default.
 	if activeTheme == nil {
-		// This case should ideally not happen if wired correctly in App.
-		// If it does, use the package default or a very basic tcell style.
 		logger.Warnf("DrawBuffer called with nil theme, using package default.")
-		activeTheme = &theme.DevComfortDark // Assuming DefaultDark is accessible
-		if activeTheme == nil { // Absolute fallback
-			activeTheme = &theme.Theme{ Styles: map[string]tcell.Style{"Default": tcell.StyleDefault} }
+		defaultTheme := &theme.DevComfortDark // Assuming DevComfortDark is accessible
+		// Check if the default theme itself has issues
+		if defaultTheme == nil || len(defaultTheme.Styles) == 0 {
+			activeTheme = &theme.Theme{Styles: map[string]tcell.Style{"Default": tcell.StyleDefault}}
+		} else {
+			activeTheme = defaultTheme
 		}
 	}
 
-	// Get base styles *from the theme*
-	style := activeTheme.GetStyle("Default")
+	// Get styles from theme
+	defaultStyle := activeTheme.GetStyle("Default") // <<< Get Default style (now has BG)
 	selectionStyle := activeTheme.GetStyle("Selection")
 	searchHighlightStyle := activeTheme.GetStyle("SearchHighlight")
 
-	// NOTE: The hardcoded `syntaxStyles` map is REMOVED. We look up from activeTheme.
-
 	width, height := tuiManager.Size()
 	viewY, viewX := editor.GetViewport()
-
-	// Get normalized selection range and active status
-	// FIX 1: Use the correct method name 'GetSelection'
 	selStart, selEnd, selectionActive := editor.GetSelection()
-
-	// Get search highlights
 	highlights := editor.GetHighlights()
-
 	statusBarHeight := 1
 	viewHeight := height - statusBarHeight
-	if viewHeight <= 0 || width <= 0 {
-		return // Nothing to draw
-	}
+
+	if viewHeight <= 0 || width <= 0 { return }
 
 	lines := editor.GetBuffer().Lines()
-
-	// --- Pre-calculate search highlights for visible lines ---
-	visibleHighlights := make(map[int][]types.HighlightRegion)
+	visibleSearchHighlights := make(map[int][]types.HighlightRegion) // Renamed for clarity
 	for _, h := range highlights {
-		// Basic visibility check (could be refined for multi-line highlights)
-		if h.Start.Line >= viewY && h.Start.Line < viewY+viewHeight {
-			visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h)
-		} else if h.End.Line >= viewY && h.End.Line < viewY+viewHeight {
-             // Also include if it ends in the viewport
-             visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h) // Use Start.Line as key for simplicity
-        } else if h.Start.Line < viewY && h.End.Line >= viewY+viewHeight {
-             // Also include if it spans the entire viewport
-             visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h)
-        }
+		// Iterate over all lines in the highlight range
+		startLine := h.Start.Line
+		endLine := h.End.Line
+		
+		// For each line in the highlight range that's visible
+		for lineIdx := startLine; lineIdx <= endLine; lineIdx++ {
+			if lineIdx >= viewY && lineIdx < viewY+viewHeight {
+				visibleSearchHighlights[lineIdx] = append(visibleSearchHighlights[lineIdx], h)
+			}
+		}
 	}
-
 
 	// --- Draw Loop ---
 	for screenY := 0; screenY < viewHeight; screenY++ {
 		bufferLineIdx := screenY + viewY
+
+        // <<< STEP 1: Fill the entire line with the theme's default style >>>
+        // This ensures the correct background covers the whole line, including empty space.
+        for fillX := 0; fillX < width; fillX++ {
+            tuiManager.screen.SetContent(fillX, screenY, ' ', nil, defaultStyle)
+        }
+
+		// Check if buffer line exists
 		if bufferLineIdx < 0 || bufferLineIdx >= len(lines) {
-			// Draw empty lines or tildes for lines beyond the buffer? Optional.
-			// For now, just skip.
-			continue
+            // Line is below buffer content, already filled with defaultStyle background.
+            // Optionally draw '~' like Vim?
+             if width > 0 {
+                  // Example: Draw '~' in the first column using comment style?
+                  // tildeStyle := activeTheme.GetStyle("comment").Foreground(tcell.ColorBlue) // Vim-like blue tilde
+                  // tuiManager.screen.SetContent(0, screenY, '~', nil, tildeStyle)
+             }
+			continue // Nothing more to draw on this line
 		}
 
+        // <<< STEP 2: Draw the actual line content, overwriting the default fill >>>
 		lineBytes := lines[bufferLineIdx]
 		lineStr := string(lineBytes)
 		gr := uniseg.NewGraphemes(lineStr)
-
-		// Get search highlights specific to this line
-		lineSearchHighlights := visibleHighlights[bufferLineIdx] // Check map for search highlights
-
-		// Get syntax highlights for this specific line (uses internal mutex)
+		lineSearchHighlights := visibleSearchHighlights[bufferLineIdx]
 		lineSyntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
 
 		currentVisualX := 0
-		currentRuneIndex := 0 // Track rune index on the line
+		currentRuneIndex := 0
 
 		for gr.Next() { // Iterate through grapheme clusters
 			clusterRunes := gr.Runes()
@@ -140,96 +138,64 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 			clusterVisualStart := currentVisualX
 			clusterVisualEnd := currentVisualX + clusterWidth
 
-			// Check if cluster is horizontally visible
 			if clusterVisualEnd > viewX && clusterVisualStart < viewX+width {
-				// Determine style for this cluster
-				currentStyle := style // Start with theme's default style
+				// --- Determine Style (Syntax > Search > Selection) ---
+				currentStyle := defaultStyle // Start with default (important!)
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
 
-				// --- Apply Syntax Highlighting ---
-				// Find the syntax style for the current position
+				// Apply Syntax
 				for _, synHL := range lineSyntaxHighlights {
-					// Check if current rune index is within this syntax range
 					if currentRuneIndex >= synHL.StartCol && currentRuneIndex < synHL.EndCol {
-						// FIX 2: Use theme.GetStyle for syntax lookup
 						currentStyle = activeTheme.GetStyle(synHL.StyleName)
-						break // Apply first syntax highlight found for this position
-					}
-				}
-
-				// --- Apply Search Highlight Style (Overrides Syntax) ---
-				for _, h := range lineSearchHighlights { // Iterate search highlights for this line
-					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {
-						currentStyle = searchHighlightStyle // Already got this from theme
 						break
 					}
 				}
-
-				// --- Apply Selection Highlight (Overrides Everything) ---
+				// Apply Search Highlight
+				for _, h := range lineSearchHighlights {
+					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {
+						currentStyle = searchHighlightStyle
+						break
+					}
+				}
+				// Apply Selection Highlight
 				if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
-					currentStyle = selectionStyle // Already got this from theme
+					currentStyle = selectionStyle
 				}
 
 				// --- Draw the Cluster ---
 				screenX := clusterVisualStart - viewX
-				visualOffsetInCluster := 0
-				for i, r := range clusterRunes {
-					calculatedScreenX := screenX + visualOffsetInCluster
-					if calculatedScreenX >= 0 && calculatedScreenX < width {
-						// Use first rune of cluster, others are combining chars for tcell
-						mainRune := r
-						var combining []rune
-						if i > 0 { // Should not happen if we draw cluster at once? Let tcell handle it.
-							// continue // Skip drawing combining chars directly? tcell handles this.
-						}
-						if i == 0 {
-                            combining = clusterRunes[1:]
-                        }
+                if screenX >= 0 && screenX < width { // Check if the start of the cluster is visible
+                     mainRune := clusterRunes[0]
+                     combining := clusterRunes[1:]
 
-
-						if mainRune == '\t' {
-							// TODO: Tab expansion needs more work with themes/widths
-							// For now, draw a space using the current style
-                            for tabX := 0; tabX < 4; tabX++ { // Assuming tab width 4 for now
-                                 drawX := calculatedScreenX + tabX
-                                 if drawX < width {
-                                     tuiManager.screen.SetContent(drawX, screenY, ' ', nil, currentStyle)
-                                 }
-                            }
-
-						} else if i == 0 { // Draw only the first rune + combining chars
-							tuiManager.screen.SetContent(calculatedScreenX, screenY, mainRune, combining, currentStyle)
-						}
-					}
-
-                    // Advance offset within the *current* screen cell for wide chars
-                    // Only advance if it's the *first* rune of the cluster being drawn
-                    if i == 0 {
-                         runeWidth := clusterWidth // Use cluster width
-                         // Fill remaining cells of a wide character cluster
-                         for cw := 1; cw < runeWidth; cw++ {
-                              fillX := calculatedScreenX + cw
-                              if fillX >= 0 && fillX < width {
-                                   tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
+                     if mainRune == '\t' {
+                          // Basic tab expansion (replace with spaces using currentStyle BG/FG)
+                          tabSpaces := 4 // Or get from config
+                          for i := 0; i < tabSpaces && screenX+i < width; i++ {
+                               tuiManager.screen.SetContent(screenX+i, screenY, ' ', nil, currentStyle)
+                          }
+                     } else {
+                          // Draw the rune cluster using the determined style
+                          tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
+                          // Fill remaining cells for wide characters using the determined style
+                          for cw := 1; cw < clusterWidth; cw++ {
+                              fillX := screenX + cw
+                              if fillX < width {
+                                  tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
                               }
-                         }
-                         visualOffsetInCluster += runeWidth
-                    }
-				}
+                          }
+                     }
+                }
 			}
 
-			// --- Update positions for next cluster ---
 			currentVisualX += clusterWidth
 			currentRuneIndex += len(clusterRunes)
-
-			// Optimization: Stop drawing line if we've gone past the edge
-			if currentVisualX >= viewX+width {
-				break
-			}
+			if currentVisualX >= viewX+width { break }
 		}
+        // Note: We no longer need to fill the rest of the line after the text,
+        // because we filled the entire line at the beginning with defaultStyle.
 	}
 }
-
 
 // DrawCursor positions the terminal cursor using visual width calculations.
 func DrawCursor(tuiManager *TUI, editor *core.Editor) {

@@ -36,6 +36,7 @@ type App struct {
 	highlighter         *highlighter.Highlighter // Hold highlighter instance
 	highlightingManager *HighlightingManager     // Add HighlightingManager
 	activeTheme         *theme.Theme             // Store reference to the active theme
+	themeManager        *theme.Manager           // Add theme manager
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -90,19 +91,25 @@ func NewApp(filePath string) (*App, error) {
 	}
 	modeHandler := modehandler.New(modeHandlerCfg)
 
+	// Initialize the theme manager
+	themeManager := theme.NewManager()
+	activeTheme := themeManager.Current() // Get current theme from manager
+
 	// --- Create App Instance ---
 	appInstance := &App{
-		tuiManager:    tuiManager,
-		editor:        editor,
-		statusBar:     statusBar,
-		eventManager:  eventManager,
-		pluginManager: pluginManager,
-		modeHandler:   modeHandler,
-		filePath:      filePath,
-		highlighter:   highlighterSvc,
-		quit:          quitChan,
-		redrawRequest: make(chan struct{}, 1),
-		activeTheme:   theme.GetCurrentTheme(), // Use the current theme (defaults to DefaultDark)
+		tuiManager:          tuiManager,
+		editor:              editor,
+		statusBar:           statusBar,
+		eventManager:        eventManager,
+		pluginManager:       pluginManager,
+		modeHandler:         modeHandler,
+		filePath:            filePath,
+		highlighter:         highlighterSvc,
+		highlightingManager: nil,          // Will be set below
+		themeManager:        themeManager, // Add theme manager
+		activeTheme:         activeTheme,  // Get from manager
+		quit:                quitChan,
+		redrawRequest:       make(chan struct{}, 1),
 		// Status fields remain for migration
 		statusMessage:     "",
 		statusMessageTime: time.Time{},
@@ -116,8 +123,10 @@ func NewApp(filePath string) (*App, error) {
 	)
 
 	// --- Create Editor API adapter ---
-	editorAPI := newEditorAPI(appInstance)
-	appInstance.editorAPI = editorAPI
+	appInstance.editorAPI = newEditorAPI(appInstance)
+
+	// Register Built-in App Commands (like :theme)
+	registerAppCommands(appInstance)
 
 	// --- Register Built-in Plugins ---
 	wcPlugin := wordcount.New()
@@ -136,7 +145,7 @@ func NewApp(filePath string) (*App, error) {
 	eventManager.Subscribe(event.TypeBufferModified, appInstance.handleBufferModifiedForHighlighting)
 
 	// --- Initialize Plugins (triggers RegisterCommand via API) ---
-	pluginManager.InitializePlugins(editorAPI)
+	pluginManager.InitializePlugins(appInstance.editorAPI)
 
 	// --- Final Setup ---
 	width, height := tuiManager.Size()
@@ -252,6 +261,10 @@ func (a *App) drawEditor() {
 	// Update status bar content (might involve modehandler state)
 	a.updateStatusBarContent()
 
+	// Get the current theme from the manager
+	currentTheme := a.themeManager.Current()
+	a.activeTheme = currentTheme // Update activeTheme reference
+
 	screen := a.tuiManager.GetScreen()
 	width, height := a.tuiManager.Size()
 
@@ -346,6 +359,11 @@ func (a *App) GetModeHandler() *modehandler.ModeHandler {
 	return a.modeHandler
 }
 
+// GetThemeManager returns the app's theme manager
+func (a *App) GetThemeManager() *theme.Manager {
+	return a.themeManager
+}
+
 // GetTheme returns the app's active theme.
 func (a *App) GetTheme() *theme.Theme {
 	return a.activeTheme
@@ -354,8 +372,25 @@ func (a *App) GetTheme() *theme.Theme {
 // SetTheme changes the app's active theme and triggers a redraw.
 func (a *App) SetTheme(t *theme.Theme) {
 	if t != nil {
+		oldTheme := a.activeTheme
+
+		// Update the app's active theme reference
 		a.activeTheme = t
-		theme.SetCurrentTheme(t)
-		a.requestRedraw() // Redraw with new theme
+
+		// Update the theme manager's active theme
+		// This also updates the global CurrentTheme reference
+		if err := a.themeManager.SetTheme(t.Name); err != nil {
+			logger.Warnf("Failed to set theme in manager: %v", err)
+			// Continue anyway since we've set it in the app
+		}
+
+		logger.Debugf("App: Theme changed from '%s' to '%s', requesting redraw",
+			oldTheme.Name, t.Name)
+
+		// Dispatch theme changed event
+		a.eventManager.Dispatch(event.TypeThemeChanged, t.Name)
+
+		// Force an immediate redraw
+		a.requestRedraw()
 	}
 }
