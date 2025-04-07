@@ -1,21 +1,97 @@
 package highlighter
 
 import (
-	"context" // Required by tree-sitter library
-	_ "embed" // Import embed
+	"context"
+	"embed" // Use embed for multiple files
 	"fmt"
+	"path/filepath" // To get file extensions
 	"strings"
-	"unicode/utf8" // Import utf8 for rune handling
+	"sync" // Needed for lazy loading maps
+	"unicode/utf8"
 
-	"github.com/bethropolis/tide/internal/buffer" // Needs buffer content
+	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/logger"
-	"github.com/bethropolis/tide/internal/types" // For HighlightRegion etc.
+	"github.com/bethropolis/tide/internal/types"
 	sitter "github.com/smacker/go-tree-sitter"
+
+	// Import the grammar bindings
 	gosrc "github.com/smacker/go-tree-sitter/golang"
+	jsonsrc "github.com/smacker/go-tree-sitter/javascript"
+	pythonsrc "github.com/smacker/go-tree-sitter/python"
 )
 
-//go:embed queries/go/highlights.scm
-var goHighlightsQuery []byte // Embed the query file content
+//go:embed queries/*/*.scm
+var embeddedQueries embed.FS // Embed the whole queries directory
+
+// --- Language Configuration ---
+
+type LanguageConfig struct {
+	Language *sitter.Language
+	Query    []byte
+}
+
+var (
+	// Map file extensions to language names (lowercase)
+	extToLangName = map[string]string{
+		".go":   "golang",
+		".py":   "python",
+		".json": "json",
+		".js":   "javascript", // Add JavaScript extension mapping
+		// Add more extensions here: .ts, .html, .css, .md, .yaml, .toml, etc.
+	}
+
+	// Lazy-loaded maps for language configs
+	languageConfigs map[string]*LanguageConfig
+	langLoadOnce    sync.Once
+	langLoadErr     error
+)
+
+// loadLanguages initializes grammars and loads queries ONCE.
+func loadLanguages() {
+	langLoadOnce.Do(func() {
+		logger.Debugf("Highlighter: Initializing languages and loading queries...")
+		languageConfigs = make(map[string]*LanguageConfig)
+
+		// Helper to load query, handling errors
+		loadQuery := func(langName string, filename string) []byte {
+			// If no specific filename provided, use default pattern
+			if filename == "" {
+				filename = "highlights.scm"
+			}
+
+			path := fmt.Sprintf("queries/%s/%s", langName, filename)
+			queryBytes, err := embeddedQueries.ReadFile(path)
+			if err != nil {
+				logger.Warnf("Failed to load highlight query '%s': %v", path, err)
+				return nil // Return nil if query doesn't exist
+			}
+			logger.Debugf("Loaded query for %s (%d bytes)", langName, len(queryBytes))
+			return queryBytes
+		}
+
+		// Add supported languages
+		languageConfigs["golang"] = &LanguageConfig{
+			Language: gosrc.GetLanguage(),
+			Query:    loadQuery("go", ""), // Directory name is 'go'
+		}
+		languageConfigs["python"] = &LanguageConfig{
+			Language: pythonsrc.GetLanguage(),
+			Query:    loadQuery("python", ""),
+		}
+		languageConfigs["json"] = &LanguageConfig{
+			Language: jsonsrc.GetLanguage(),
+			Query:    loadQuery("json", ""),
+		}
+		languageConfigs["javascript"] = &LanguageConfig{
+			Language: jsonsrc.GetLanguage(),
+			Query:    loadQuery("javascript", ""), 
+		}
+
+		// Add more languages here... 
+
+		logger.Debugf("Highlighter: Language initialization complete.")
+	})
+}
 
 // HighlightResult holds computed highlights for efficient lookup during drawing.
 // Maps line number -> slice of styled ranges on that line.
@@ -24,67 +100,84 @@ type HighlightResult map[int][]types.StyledRange
 // Highlighter service manages parsing and querying syntax trees.
 type Highlighter struct {
 	parser *sitter.Parser
-	// Cache for languages? map[string]*sitter.Language ?
 }
 
-// NewHighlighter creates a new highlighter instance.
+// NewHighlighter ensures languages are loaded.
 func NewHighlighter() *Highlighter {
+	loadLanguages() // Ensure languages are loaded when highlighter is created
+	if langLoadErr != nil {
+		// Handle error during language loading if necessary
+		logger.Errorf("Highlighter creation failed due to language loading error: %v", langLoadErr)
+	}
 	parser := sitter.NewParser()
 	return &Highlighter{
 		parser: parser,
 	}
 }
 
-// GetLanguage returns the Tree-sitter language definition.
-// TODO: Detect language based on filename or content. Hardcode Go for now.
-func (h *Highlighter) GetLanguage(filePath string) *sitter.Language {
-	// Use the imported grammar package directly
-	lang := gosrc.GetLanguage()
-	// Later, use filePath to determine language and load dynamically or from cache.
-	// e.g., lang := h.languageRegistry.GetLanguageForFile(filePath)
-	return lang
+// GetLanguage looks up the language config based on file extension.
+// It returns the sitter.Language and the loaded query bytes.
+func (h *Highlighter) GetLanguage(filePath string) (*sitter.Language, []byte) {
+	loadLanguages() // Ensure maps are populated
+	ext := strings.ToLower(filepath.Ext(filePath))
+	langName, ok := extToLangName[ext]
+	if !ok {
+		logger.Debugf("GetLanguage: No language registered for extension '%s'", ext)
+		return nil, nil // Unknown extension
+	}
+
+	config, configOk := languageConfigs[langName]
+	if !configOk || config.Language == nil {
+		logger.Warnf("GetLanguage: Language '%s' configured but grammar not loaded", langName)
+		return nil, nil // Configured but not loaded correctly
+	}
+
+	// Return language and query bytes (query might be nil if loading failed)
+	return config.Language, config.Query
 }
 
-// HighlightBuffer parses the buffer and generates highlight information.
-// Now accepts the previous tree for incremental parsing and returns the new tree.
-func (h *Highlighter) HighlightBuffer(ctx context.Context, buf buffer.Buffer, lang *sitter.Language, oldTree *sitter.Tree) (HighlightResult, *sitter.Tree, error) {
-	logger.Debugf("HighlightBuffer: Starting for language %v", lang)
-	logger.Debugf("HighlightBuffer: Embedded query size: %d bytes", len(goHighlightsQuery))
-
+// HighlightBuffer uses the provided language and query bytes.
+func (h *Highlighter) HighlightBuffer(ctx context.Context, buf buffer.Buffer, lang *sitter.Language, queryBytes []byte, oldTree *sitter.Tree) (HighlightResult, *sitter.Tree, error) {
 	if lang == nil {
-		return nil, oldTree, fmt.Errorf("no language provided for highlighting")
+		return make(HighlightResult), oldTree, fmt.Errorf("no language provided for highlighting")
 	}
+
+	// Query bytes might be nil if loading failed or not provided for language
+	if queryBytes == nil {
+		logger.Debugf("HighlightBuffer: No query available for language %v, skipping query phase.", lang)
+		// Still parse, just don't query
+		h.parser.SetLanguage(lang)
+		tree, err := h.parser.ParseCtx(ctx, oldTree, buf.Bytes())
+		if err != nil {
+			logger.Errorf("Tree-sitter parsing error: %v", err)
+			return make(HighlightResult), oldTree, fmt.Errorf("parsing failed: %w", err)
+		}
+		return make(HighlightResult), tree, nil // Return empty highlights but new tree
+	}
+
 	h.parser.SetLanguage(lang)
-
-	sourceCode := buf.Bytes() // Get entire buffer content
-
-	// Parse the source code to get the syntax tree
-	// Use provided context and oldTree for incremental parsing
+	sourceCode := buf.Bytes()
 	tree, err := h.parser.ParseCtx(ctx, oldTree, sourceCode)
 	if err != nil {
 		logger.Errorf("Tree-sitter parsing error: %v", err)
 		return nil, oldTree, fmt.Errorf("parsing failed: %w", err)
 	}
-	logger.Debugf("HighlightBuffer: Parsing successful: %t", err == nil)
-	// Note: Don't close the tree here anymore, as the Editor will manage its lifecycle
 
-	// --- Query the Tree ---
-	// TODO: Cache queries per language
-	query, err := sitter.NewQuery(goHighlightsQuery, lang) // Use embedded query bytes
+	query, err := sitter.NewQuery(queryBytes, lang) // Use provided query bytes
 	if err != nil {
 		logger.Errorf("Failed to parse highlight query: %v", err)
-		tree.Close() // Close the newly parsed tree if query fails
+		tree.Close()
 		return nil, oldTree, fmt.Errorf("query parse failed: %w", err)
 	}
-	defer query.Close() // Close query when done
+	defer query.Close()
 
-	qc := sitter.NewQueryCursor()   // Create a query cursor
-	defer qc.Close()                // Close cursor when done
-	qc.Exec(query, tree.RootNode()) // Execute query on the root node
+	qc := sitter.NewQueryCursor()
+	defer qc.Close()
+	qc.Exec(query, tree.RootNode())
 
 	highlights := make(HighlightResult)
-	captureCount := 0
 	matchCount := 0
+	captureCount := 0
 
 	// Iterate through query matches
 	for {
@@ -189,23 +282,20 @@ func (h *Highlighter) HighlightBuffer(ctx context.Context, buf buffer.Buffer, la
 // captureNameToStyleName maps Tree-sitter capture names (like @keyword.control)
 // to the style names used by our theme system.
 func captureNameToStyleName(captureName string) string {
-	// Simple mapping for now. Can be made more sophisticated (e.g., using '.' hierarchy).
 	// Strip the leading '@' if present
 	if len(captureName) > 0 && captureName[0] == '@' {
 		captureName = captureName[1:]
 	}
-	// Use the first part before a dot as the general style for now
-	// e.g., "keyword.control" -> "keyword"
+
+	// Option 1: Use only base name for simpler themes
 	if dotIndex := strings.Index(captureName, "."); dotIndex != -1 {
 		return captureName[:dotIndex]
 	}
+
 	return captureName // Return full name if no dot
 }
 
-// --- Helpers ---
-
 // byteOffsetToRuneIndex converts a byte offset to a rune index in a byte slice.
-// (Copied from core/editor.go - TODO: Move to a shared util package?)
 func byteOffsetToRuneIndex(line []byte, byteOffset int) int {
 	if byteOffset <= 0 {
 		return 0
