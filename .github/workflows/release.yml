@@ -25,7 +25,7 @@ jobs:
         runs-on: ubuntu-latest
         strategy:
             matrix:
-                go-version: ['1.23.7']
+                go-version: ['>=1.23.7']
                 platform:
                     - { os: linux, arch: amd64 }
                     - { os: linux, arch: arm64 }
@@ -46,11 +46,17 @@ jobs:
               run: mkdir -p ./dist/package
               shell: bash
 
+            - name: Install dependencies
+              run: |
+                sudo apt-get update
+                sudo apt-get install -y gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu
+              if: matrix.platform.os == 'linux'
+
             - name: Build
               env:
-                GOOS: ${{ matrix.platform.os }}
                 GOARCH: ${{ matrix.platform.arch }}
-                CGO_ENABLED: 0  # Disable CGO for static binaries
+                GOOS: ${{ matrix.platform.os }}
+                CGO_ENABLED: 1  
               run: |
                 BINARY_NAME="tide"
                 OUTPUT_NAME="${BINARY_NAME}"
@@ -61,7 +67,7 @@ jobs:
                 fi
                 
                 # Build with optimization flags
-                go build -trimpath -ldflags="-s -w" -o "./dist/${OUTPUT_NAME}" ./cmd/tide/
+                CC=${GOOS}-${GOARCH}-gcc go build -trimpath -ldflags="-s -w" -o "./dist/${OUTPUT_NAME}" ./cmd/tide/
                 
                 # List the build directory
                 ls -la ./dist/
