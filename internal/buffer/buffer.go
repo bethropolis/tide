@@ -9,9 +9,9 @@ type Buffer interface {
 	Lines() [][]byte
 	Line(index int) ([]byte, error)
 	LineCount() int
-	// Use types.Position in the interface definition
-	Insert(pos types.Position, text []byte) error
-	Delete(start, end types.Position) error
+	// Methods now return EditInfo
+	Insert(pos types.Position, text []byte) (types.EditInfo, error)
+	Delete(start, end types.Position) (types.EditInfo, error)
 	Save(filePath string) error
 	Bytes() []byte
 	FilePath() string

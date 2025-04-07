@@ -14,7 +14,7 @@ import (
 var (
 	logFilePath string
 	logLevel    string
-	filePath    string // File to open in editor
+	filePath    string 
 )
 
 func main() {

@@ -24,8 +24,8 @@ const (
 	TypeKeyPressed // Raw key press event forwarded
 
 	// Application Lifecycle Events
-	TypeAppReady   // Fired when the application is fully initialized
-	TypeAppQuit    // Fired just before application termination begins
+	TypeAppReady // Fired when the application is fully initialized
+	TypeAppQuit  // Fired just before application termination begins
 
 	// Plugin specific events can be defined later or use custom data
 )
@@ -40,9 +40,9 @@ type Event struct {
 // --- Specific Event Data Structures ---
 // (Define structs for data associated with specific event types)
 
-// BufferModifiedData contains info about buffer changes.
+// BufferModifiedData contains info about buffer changes, including EditInfo.
 type BufferModifiedData struct {
-	// Could add details like range changed, type of change (insert/delete) later
+	Edit types.EditInfo // Information about the change for incremental parsing
 }
 
 // BufferLoadedData contains info about the loaded buffer.

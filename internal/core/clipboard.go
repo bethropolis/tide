@@ -130,13 +130,13 @@ func (e *Editor) Paste() (bool, error) {
 	if e.HasSelection() {
 		start, end, _ := e.GetSelection()
 		e.ClearSelection()
-		err := e.buffer.Delete(start, end)
+		editInfo, err := e.buffer.Delete(start, end) // Capture EditInfo
 		if err != nil {
 			return false, fmt.Errorf("failed to delete selection before paste: %w", err)
 		}
 		e.Cursor = start // Move cursor to where selection started
 		if e.eventManager != nil {
-			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		}
 	}
 
@@ -144,7 +144,7 @@ func (e *Editor) Paste() (bool, error) {
 	clipboardContent := e.clipboard
 
 	// Use buffer's Insert method
-	err := e.buffer.Insert(pastePos, clipboardContent)
+	editInfo, err := e.buffer.Insert(pastePos, clipboardContent) // Capture EditInfo
 	if err != nil {
 		return false, fmt.Errorf("buffer insert failed during paste: %w", err)
 	}
@@ -173,7 +173,7 @@ func (e *Editor) Paste() (bool, error) {
 
 	logger.Debugf("Editor: Pasted %d bytes", len(clipboardContent)) // Using logger instead of log
 	if e.eventManager != nil {
-		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{}) // Dispatch modify event
+		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo}) // Dispatch modify event with EditInfo
 	}
 
 	return true, nil

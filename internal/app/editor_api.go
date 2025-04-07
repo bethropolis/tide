@@ -56,9 +56,9 @@ func (api *appEditorAPI) GetBufferBytes() []byte {
 // --- Buffer Modification ---
 
 func (api *appEditorAPI) InsertText(pos types.Position, text []byte) error {
-	err := api.app.editor.GetBuffer().Insert(pos, text)
+	editInfo, err := api.app.editor.GetBuffer().Insert(pos, text) // Capture EditInfo
 	if err == nil {
-		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		// We likely need to redraw if buffer changes via plugin
 		api.app.requestRedraw()
 	}
@@ -68,9 +68,9 @@ func (api *appEditorAPI) InsertText(pos types.Position, text []byte) error {
 
 func (api *appEditorAPI) DeleteRange(start, end types.Position) error {
 	// Similar delegation and considerations as InsertText
-	err := api.app.editor.GetBuffer().Delete(start, end)
+	editInfo, err := api.app.editor.GetBuffer().Delete(start, end) // Capture EditInfo
 	if err == nil {
-		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		api.app.requestRedraw()
 	}
 	// TODO: Cursor update?

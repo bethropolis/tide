@@ -3,6 +3,8 @@ package core
 
 import (
 	"regexp" // Needed for regex search
+	"sync"   // Add sync package for mutex
+
 	// Needed for Find
 	"unicode/utf8" // Needed for rune handling
 
@@ -12,6 +14,7 @@ import (
 	hl "github.com/bethropolis/tide/internal/highlighter" // Import highlighter
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
+	sitter "github.com/smacker/go-tree-sitter" // Import tree-sitter
 )
 
 type Editor struct {
@@ -38,6 +41,8 @@ type Editor struct {
 	// Syntax Highlighting State
 	highlighter      *hl.Highlighter    // Highlighter service instance
 	syntaxHighlights hl.HighlightResult // Store computed syntax highlights
+	syntaxTree       *sitter.Tree       // Store the current syntax tree
+	highlightMutex   sync.RWMutex       // Mutex to protect syntaxHighlights & syntaxTree
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
@@ -54,6 +59,8 @@ func NewEditor(buf buffer.Buffer) *Editor {
 		clipboard:        nil,                              // Initialize clipboard as nil
 		highlights:       make([]types.HighlightRegion, 0), // Initialize highlights slice
 		syntaxHighlights: make(hl.HighlightResult),         // Initialize syntax map
+		syntaxTree:       nil,                              // Initialize tree as nil
+		highlightMutex:   sync.RWMutex{},                   // Initialize mutex
 	}
 }
 
@@ -67,48 +74,66 @@ func (e *Editor) SetHighlighter(h *hl.Highlighter) {
 	e.highlighter = h
 }
 
-// TriggerSyntaxHighlight requests an update of syntax highlighting.
-// Should be called after buffer load or significant modification.
+// TriggerSyntaxHighlight is now a placeholder since highlighting is handled asynchronously
 func (e *Editor) TriggerSyntaxHighlight() {
-	if e.highlighter == nil {
-		return // No highlighter configured
-	}
-	filePath := ""
-	if bufWithFP, ok := e.buffer.(interface{ FilePath() string }); ok {
-		filePath = bufWithFP.FilePath()
-	}
-
-	lang := e.highlighter.GetLanguage(filePath) // Determine language (hardcoded Go for now)
-	if lang == nil {
-		logger.Debugf("No language found/configured for: %s", filePath)
-		e.syntaxHighlights = make(hl.HighlightResult) // Clear highlights if no language
-		return
-	}
-
-	// logger.Debugf("Triggering syntax highlighting for language: %s", lang.Name())
-
-	// Run highlighting (currently synchronous and non-incremental)
-	// TODO: Make this asynchronous in a background goroutine later
-	newHighlights, err := e.highlighter.HighlightBuffer(e.buffer, lang)
-	if err != nil {
-		logger.Warnf("Syntax highlighting failed: %v", err)
-		// Keep old highlights or clear them? Clear for now.
-		e.syntaxHighlights = make(hl.HighlightResult)
-	} else {
-		e.syntaxHighlights = newHighlights
-		logger.Debugf("Syntax highlighting complete.")
-		// TODO: Need to trigger redraw ONLY for visible area affected?
-		// For now, assume caller triggers full redraw.
-	}
+	// The actual triggering logic will move to a debounced async mechanism.
+	logger.Debugf("Editor: TriggerSyntaxHighlight called (will be handled async now)")
 }
 
 // GetSyntaxHighlightsForLine returns the computed syntax styles for a given line number.
 func (e *Editor) GetSyntaxHighlightsForLine(lineNum int) []types.StyledRange {
-	// TODO: Add RWMutex for syntaxHighlights if accessed concurrently
+	e.highlightMutex.RLock()
+	defer e.highlightMutex.RUnlock()
+
 	if styles, ok := e.syntaxHighlights[lineNum]; ok {
 		return styles
 	}
 	return nil // No highlights for this line
+}
+
+// updateSyntaxHighlights safely updates the highlights and tree
+func (e *Editor) updateSyntaxHighlights(newHighlights hl.HighlightResult, newTree *sitter.Tree) {
+	e.highlightMutex.Lock()
+	defer e.highlightMutex.Unlock()
+
+	// Close the old tree before replacing it
+	if e.syntaxTree != nil {
+		e.syntaxTree.Close()
+	}
+
+	e.syntaxHighlights = newHighlights
+	e.syntaxTree = newTree // Store the new tree
+}
+
+// UpdateSyntaxHighlights is an exported wrapper around updateSyntaxHighlights
+// for use by the highlight manager.
+func (e *Editor) UpdateSyntaxHighlights(newHighlights hl.HighlightResult, newTree *sitter.Tree) {
+	e.updateSyntaxHighlights(newHighlights, newTree)
+}
+
+// UpdateVisibleSyntaxHighlights updates only the highlights for visible lines and updates the tree.
+// This allows for more responsive UI by prioritizing what the user can see.
+func (e *Editor) UpdateVisibleSyntaxHighlights(visibleHighlights hl.HighlightResult, newTree *sitter.Tree) {
+	e.highlightMutex.Lock()
+	defer e.highlightMutex.Unlock()
+
+	// Merge visible highlights into the main map
+	for line, styles := range visibleHighlights {
+		e.syntaxHighlights[line] = styles
+	}
+
+	// Update the tree
+	if e.syntaxTree != nil {
+		e.syntaxTree.Close()
+	}
+	e.syntaxTree = newTree
+}
+
+// GetCurrentTree safely gets the current tree (needed for incremental parse)
+func (e *Editor) GetCurrentTree() *sitter.Tree {
+	e.highlightMutex.RLock()
+	defer e.highlightMutex.RUnlock()
+	return e.syntaxTree
 }
 
 // SetViewSize updates the cached view dimensions. Called on resize or before drawing.

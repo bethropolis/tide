@@ -9,8 +9,8 @@ import (
 	"os"
 	"unicode/utf8"
 
-	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types" // Import types instead of core
+	sitter "github.com/smacker/go-tree-sitter"   // Import tree-sitter for Point
 )
 
 // SliceBuffer implementation (content mostly unchanged, just imports and method signatures)
@@ -185,19 +185,71 @@ func (sb *SliceBuffer) validatePositionOnLine(col int, lineIndex int) (validCol 
 	return col, byteOff, nil
 }
 
-// Insert inserts text at a given position. Handles single/multiple lines.
-func (sb *SliceBuffer) Insert(pos types.Position, text []byte) error {
-	if len(text) == 0 {
-		return nil
+// getBufferStateForEdit calculates byte offsets and sitter.Point for a given types.Position
+func (sb *SliceBuffer) getBufferStateForEdit(pos types.Position) (byteOffset uint32, point sitter.Point) {
+	byteOff := uint32(0)
+	// Calculate total bytes up to the start of the target line
+	for i := 0; i < pos.Line; i++ {
+		if i < len(sb.lines) {
+			byteOff += uint32(len(sb.lines[i])) + 1 // +1 for the newline character
+		}
 	}
 
+	// Calculate byte offset within the target line
+	colByteOffset := uint32(0)
+	if pos.Line >= 0 && pos.Line < len(sb.lines) {
+		currentLine := sb.lines[pos.Line]
+		byteOffInLine := 0
+		runeCount := 0
+		for i := 0; i < len(currentLine); {
+			if runeCount == pos.Col {
+				break
+			}
+			_, size := utf8.DecodeRune(currentLine[i:])
+			if size == 0 {
+				break // Avoid infinite loop
+			}
+			byteOffInLine += size
+			runeCount++
+			i += size
+		}
+		// Handle case where col is at the end of the line
+		if runeCount < pos.Col {
+			byteOffInLine = len(currentLine)
+		}
+		colByteOffset = uint32(byteOffInLine)
+		byteOff += colByteOffset
+	}
+
+	point = sitter.Point{
+		Row:    uint32(pos.Line),
+		Column: colByteOffset, // Point column is BYTES within the line
+	}
+	return byteOff, point
+}
+
+// Insert inserts text at a given position. Handles single/multiple lines.
+func (sb *SliceBuffer) Insert(pos types.Position, text []byte) (types.EditInfo, error) {
+	editInfo := types.EditInfo{}
+	if len(text) == 0 {
+		return editInfo, nil // No change, no edit info
+	}
+
+	// 1. Get state *before* the edit
+	startIndex, startPoint := sb.getBufferStateForEdit(pos)
+	editInfo.StartIndex = startIndex
+	editInfo.StartPosition = startPoint
+	editInfo.OldEndIndex = startIndex // For insert, old range is zero length
+	editInfo.OldEndPosition = startPoint
+
+	// Perform the actual buffer modification
 	validPos, byteOffset, err := sb.validatePosition(pos)
 	if err != nil {
-		return fmt.Errorf("invalid insert position: %w", err)
+		return editInfo, fmt.Errorf("invalid insert position: %w", err)
 	}
 
 	// Mark buffer as modified
-	sb.modified = true // Set modified flag
+	sb.modified = true
 
 	currentLine := sb.lines[validPos.Line]
 	insertLines := bytes.Split(text, []byte("\n"))
@@ -215,36 +267,67 @@ func (sb *SliceBuffer) Insert(pos types.Position, text []byte) error {
 			newLines[i-1] = lineCopy
 		}
 		newLines[len(newLines)-1] = append(newLines[len(newLines)-1], tail...)
-		// Insert the new lines
-		// Ensure we handle insertion at the very end correctly
+
 		if validPos.Line+1 > len(sb.lines) {
 			sb.lines = append(sb.lines, newLines...)
 		} else {
 			sb.lines = append(sb.lines[:validPos.Line+1], append(newLines, sb.lines[validPos.Line+1:]...)...)
 		}
-
 	} else {
 		sb.lines[validPos.Line] = append(sb.lines[validPos.Line], tail...)
 	}
 
-	return nil
+	// 3. Calculate state *after* the edit
+	textLen := uint32(len(text))
+	editInfo.NewEndIndex = startIndex + textLen
+
+	// Calculate NewEndPosition based on inserted text content
+	numLinesInserted := bytes.Count(text, []byte("\n"))
+	newEndLine := startPoint.Row + uint32(numLinesInserted)
+	var newEndCol uint32
+
+	if numLinesInserted == 0 {
+		// Inserted on the same line
+		newEndCol = startPoint.Column + uint32(len(text)) // Column is bytes for sitter.Point
+	} else {
+		// Inserted multiple lines
+		lastNewLineIndex := bytes.LastIndexByte(text, '\n')
+		lastLineBytes := text[lastNewLineIndex+1:]
+		newEndCol = uint32(len(lastLineBytes)) // Bytes on the last inserted line
+	}
+
+	editInfo.NewEndPosition = sitter.Point{Row: newEndLine, Column: newEndCol}
+
+	return editInfo, nil
 }
 
 // Delete removes text within a given range (start inclusive, end exclusive).
-func (sb *SliceBuffer) Delete(start, end types.Position) error {
+func (sb *SliceBuffer) Delete(start, end types.Position) (types.EditInfo, error) {
+	editInfo := types.EditInfo{}
 	if start == end {
-		return nil // Nothing to delete
+		return editInfo, nil // Nothing to delete
 	}
+
+	// 1. Get state *before* the edit
+	startIndexBytes, startPoint := sb.getBufferStateForEdit(start)
+	endIndexBytes, endPoint := sb.getBufferStateForEdit(end)
+
+	editInfo.StartIndex = startIndexBytes
+	editInfo.StartPosition = startPoint
+	editInfo.OldEndIndex = endIndexBytes // End of the text being removed
+	editInfo.OldEndPosition = endPoint
+	editInfo.NewEndIndex = startIndexBytes // After delete, the new end is where the start was
+	editInfo.NewEndPosition = startPoint
 
 	// Validate positions and get byte offsets
 	vStart, vEnd, startOffset, endOffset, err := sb.validateAndGetByteOffsets(start, end)
 	if err != nil {
-		return fmt.Errorf("invalid delete range: %w", err)
+		return editInfo, fmt.Errorf("invalid delete range: %w", err)
 	}
 
 	// If validation resulted in start == end after clamping, do nothing
 	if vStart == vEnd && startOffset == endOffset {
-		return nil
+		return editInfo, nil
 	}
 
 	// Mark buffer as modified
@@ -254,64 +337,44 @@ func (sb *SliceBuffer) Delete(start, end types.Position) error {
 
 	if vStart.Line == vEnd.Line {
 		// --- Case 1: Deletion within a single line ---
-		// Ensure endOffset is not out of bounds after potential clamping
 		if endOffset > len(startLineBytes) {
 			endOffset = len(startLineBytes)
 		}
-		// Ensure startOffset is valid
 		if startOffset > len(startLineBytes) {
 			startOffset = len(startLineBytes)
 		}
-		// Ensure start <= end after clamping
 		if startOffset > endOffset {
 			startOffset = endOffset
 		}
 
-		// Reconstruct the line by combining the part before start and the part after end
 		sb.lines[vStart.Line] = append(startLineBytes[:startOffset], startLineBytes[endOffset:]...)
-
 	} else {
 		// --- Case 2: Deletion spans multiple lines ---
 		endLineBytes := sb.lines[vEnd.Line]
 
-		// Keep the beginning of the start line and the end of the end line
 		startPart := startLineBytes[:startOffset]
 		endPart := endLineBytes[endOffset:]
 
-		// Merge the start part and end part onto the start line
 		sb.lines[vStart.Line] = append(startPart, endPart...)
 
-		// Remove the lines between start and end (exclusive start, inclusive end)
-		// Calculate the indices of lines to remove
 		firstLineToRemove := vStart.Line + 1
 		lastLineToRemove := vEnd.Line
 
-		// Ensure indices are valid before slicing
 		if firstLineToRemove <= lastLineToRemove && lastLineToRemove < len(sb.lines) {
-			// Check if we are deleting up to the *last* line
 			if lastLineToRemove+1 >= len(sb.lines) {
-				// If deleting includes the last line, just truncate the slice
 				sb.lines = sb.lines[:firstLineToRemove]
 			} else {
-				// Otherwise, append the lines *after* the deleted range
 				sb.lines = append(sb.lines[:firstLineToRemove], sb.lines[lastLineToRemove+1:]...)
 			}
-		} else if firstLineToRemove > lastLineToRemove {
-			// This means vStart.Line + 1 > vEnd.Line, only possible if vEnd.Line == vStart.Line
-			// This case is handled above (single line deletion). Should not happen here.
-			logger.Debugf("Warning: Unexpected state in multi-line delete: startLine=%d, endLine=%d", vStart.Line, vEnd.Line)
 		}
-		// If lastLineToRemove is out of bounds, it means we deleted *up to* the end, handled by the first condition.
 	}
 
-	// Ensure buffer always has at least one line (convention)
+	// Ensure buffer always has at least one line
 	if len(sb.lines) == 0 {
 		sb.lines = [][]byte{[]byte("")}
-		// If buffer became empty, it's arguably not modified from a 'new file' state
-		// However, if it previously had content, it *is* modified. Keep sb.modified = true.
 	}
 
-	return nil
+	return editInfo, nil
 }
 
 // validatePosition (keep the implementation from the previous step)
