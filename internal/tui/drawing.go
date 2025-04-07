@@ -2,6 +2,11 @@
 package tui
 
 import (
+	"fmt"  // Import fmt
+	"math" // Import math for Log10
+
+	// Import strconv
+	// Import strings
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/theme" // Import theme package
@@ -9,7 +14,6 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg"
 )
-
 
 func calculateVisualColumn(line []byte, runeIndex int) int {
 	if runeIndex <= 0 {
@@ -55,7 +59,6 @@ func isPositionWithin(pos, start, end types.Position) bool {
 	return true
 }
 
-
 // DrawBuffer draws the *visible* portion using the provided theme.
 // It now takes an activeTheme argument.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) {
@@ -72,7 +75,8 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	}
 
 	// Get styles from theme
-	defaultStyle := activeTheme.GetStyle("Default") // <<< Get Default style (now has BG)
+	defaultStyle := activeTheme.GetStyle("Default")       // <<< Get Default style (now has BG)
+	lineNumberStyle := activeTheme.GetStyle("LineNumber") // Get LineNumber style
 	selectionStyle := activeTheme.GetStyle("Selection")
 	searchHighlightStyle := activeTheme.GetStyle("SearchHighlight")
 
@@ -83,15 +87,31 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	statusBarHeight := 1
 	viewHeight := height - statusBarHeight
 
-	if viewHeight <= 0 || width <= 0 { return }
+	if viewHeight <= 0 || width <= 0 {
+		return
+	}
 
 	lines := editor.GetBuffer().Lines()
+	lineCount := len(lines)
+	if lineCount == 0 {
+		lineCount = 1
+	} // Avoid Log10(0)
+
+	// --- Calculate Gutter Width ---
+	maxDigits := int(math.Log10(float64(lineCount))) + 1
+	lineNumberPadding := 1 // Space between number and text
+	gutterWidth := maxDigits + lineNumberPadding
+	if gutterWidth >= width { // Not enough space for gutter and text
+		gutterWidth = 0 // Disable gutter if screen too narrow
+	}
+	textAreaWidth := width - gutterWidth
+
 	visibleSearchHighlights := make(map[int][]types.HighlightRegion) // Renamed for clarity
 	for _, h := range highlights {
 		// Iterate over all lines in the highlight range
 		startLine := h.Start.Line
 		endLine := h.End.Line
-		
+
 		// For each line in the highlight range that's visible
 		for lineIdx := startLine; lineIdx <= endLine; lineIdx++ {
 			if lineIdx >= viewY && lineIdx < viewY+viewHeight {
@@ -104,25 +124,42 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	for screenY := 0; screenY < viewHeight; screenY++ {
 		bufferLineIdx := screenY + viewY
 
-        // <<< STEP 1: Fill the entire line with the theme's default style >>>
-        // This ensures the correct background covers the whole line, including empty space.
-        for fillX := 0; fillX < width; fillX++ {
-            tuiManager.screen.SetContent(fillX, screenY, ' ', nil, defaultStyle)
-        }
+		// --- A: Fill the entire line with the theme's default style ---
+		for fillX := 0; fillX < width; fillX++ {
+			tuiManager.screen.SetContent(fillX, screenY, ' ', nil, defaultStyle)
+		}
+
+		// --- B: Draw Line Number Gutter ---
+		if gutterWidth > 0 {
+			lineNumStr := ""
+			currentLineStyle := lineNumberStyle // Default gutter style
+			if bufferLineIdx >= 0 && bufferLineIdx < len(lines) {
+				// Format line number, right-aligned
+				lineNumStr = fmt.Sprintf("%*d", maxDigits, bufferLineIdx+1)
+
+				// Optional: Highlight current line number differently
+				if editor.GetCursor().Line == bufferLineIdx {
+					currentLineStyle = lineNumberStyle.Bold(true)
+				}
+			}
+
+			// Draw the formatted string into the gutter area
+			lineNumRunes := []rune(lineNumStr)
+			for i, r := range lineNumRunes {
+				drawX := i                                 // Draw starting from column 0
+				if drawX < gutterWidth-lineNumberPadding { // Ensure within number area
+					tuiManager.screen.SetContent(drawX, screenY, r, nil, currentLineStyle)
+				}
+			}
+		}
 
 		// Check if buffer line exists
 		if bufferLineIdx < 0 || bufferLineIdx >= len(lines) {
-            // Line is below buffer content, already filled with defaultStyle background.
-            // Optionally draw '~' like Vim?
-             if width > 0 {
-                  // Example: Draw '~' in the first column using comment style?
-                  // tildeStyle := activeTheme.GetStyle("comment").Foreground(tcell.ColorBlue) // Vim-like blue tilde
-                  // tuiManager.screen.SetContent(0, screenY, '~', nil, tildeStyle)
-             }
+			// Line is below buffer content, already filled with defaultStyle background.
 			continue // Nothing more to draw on this line
 		}
 
-        // <<< STEP 2: Draw the actual line content, overwriting the default fill >>>
+		// --- C: Draw Buffer Text ---
 		lineBytes := lines[bufferLineIdx]
 		lineStr := string(lineBytes)
 		gr := uniseg.NewGraphemes(lineStr)
@@ -138,7 +175,11 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 			clusterVisualStart := currentVisualX
 			clusterVisualEnd := currentVisualX + clusterWidth
 
-			if clusterVisualEnd > viewX && clusterVisualStart < viewX+width {
+			// Calculate screen X relative to text area, accounting for horizontal scroll
+			// and offset by the gutter width
+			screenX := (clusterVisualStart - viewX) + gutterWidth
+
+			if clusterVisualEnd > viewX && clusterVisualStart < viewX+textAreaWidth {
 				// --- Determine Style (Syntax > Search > Selection) ---
 				currentStyle := defaultStyle // Start with default (important!)
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
@@ -163,37 +204,40 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 				}
 
 				// --- Draw the Cluster ---
-				screenX := clusterVisualStart - viewX
-                if screenX >= 0 && screenX < width { // Check if the start of the cluster is visible
-                     mainRune := clusterRunes[0]
-                     combining := clusterRunes[1:]
+				if screenX >= gutterWidth && screenX < width { // Check if the start of the cluster is visible
+					mainRune := clusterRunes[0]
+					combining := clusterRunes[1:]
 
-                     if mainRune == '\t' {
-                          // Basic tab expansion (replace with spaces using currentStyle BG/FG)
-                          tabSpaces := 4 // Or get from config
-                          for i := 0; i < tabSpaces && screenX+i < width; i++ {
-                               tuiManager.screen.SetContent(screenX+i, screenY, ' ', nil, currentStyle)
-                          }
-                     } else {
-                          // Draw the rune cluster using the determined style
-                          tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
-                          // Fill remaining cells for wide characters using the determined style
-                          for cw := 1; cw < clusterWidth; cw++ {
-                              fillX := screenX + cw
-                              if fillX < width {
-                                  tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
-                              }
-                          }
-                     }
-                }
+					if mainRune == '\t' {
+						// Basic tab expansion (replace with spaces using currentStyle BG/FG)
+						tabSpaces := 4 // Or get from config
+						// Calculate visual width to next tab stop correctly
+						visualScreenX := currentVisualX - viewX + gutterWidth
+						spacesToDraw := tabSpaces - (visualScreenX % tabSpaces)
+						for i := 0; i < spacesToDraw && screenX+i < width; i++ {
+							tuiManager.screen.SetContent(screenX+i, screenY, ' ', nil, currentStyle)
+						}
+					} else {
+						// Draw the rune cluster using the determined style
+						tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
+						// Fill remaining cells for wide characters using the determined style
+						for cw := 1; cw < clusterWidth; cw++ {
+							fillX := screenX + cw
+							if fillX < width {
+								tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
+							}
+						}
+					}
+				}
 			}
 
 			currentVisualX += clusterWidth
 			currentRuneIndex += len(clusterRunes)
-			if currentVisualX >= viewX+width { break }
+			// Optimization: Stop drawing if we go past the visible text area edge
+			if currentVisualX >= viewX+textAreaWidth {
+				break
+			}
 		}
-        // Note: We no longer need to fill the rest of the line after the text,
-        // because we filled the entire line at the beginning with defaultStyle.
 	}
 }
 
@@ -201,6 +245,19 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 func DrawCursor(tuiManager *TUI, editor *core.Editor) {
 	cursor := editor.GetCursor()
 	viewY, viewX := editor.GetViewport()
+
+	// Calculate gutter width
+	lineCount := editor.GetBuffer().LineCount()
+	if lineCount == 0 {
+		lineCount = 1
+	}
+	maxDigits := int(math.Log10(float64(lineCount))) + 1
+	lineNumberPadding := 1
+	gutterWidth := maxDigits + lineNumberPadding
+	width, height := tuiManager.Size() // Get screen width
+	if gutterWidth >= width {
+		gutterWidth = 0
+	} // Disable gutter if too narrow
 
 	// Get current line to calculate visual offset
 	lineBytes, err := editor.GetBuffer().Line(cursor.Line)
@@ -212,14 +269,16 @@ func DrawCursor(tuiManager *TUI, editor *core.Editor) {
 	}
 
 	// Calculate screen position based on viewport and visual column
-	screenX := cursorVisualCol - viewX
+	screenX := (cursorVisualCol - viewX) + gutterWidth
 	screenY := cursor.Line - viewY
 
-	// Hide cursor if it's outside the drawable buffer area
-	width, height := tuiManager.Size()
+	// Hide cursor if it's outside the drawable area
 	statusBarHeight := 1 // Assuming status bar height is 1
 	viewHeight := height - statusBarHeight
-	if screenX < 0 || screenX >= width || screenY < 0 || screenY >= viewHeight || viewHeight <= 0 || width <= 0 {
+	textAreaWidth := width - gutterWidth
+
+	// Check against screen boundaries AND ensure it's not within the gutter itself
+	if screenX < gutterWidth || screenX >= width || screenY < 0 || screenY >= viewHeight || viewHeight <= 0 || textAreaWidth <= 0 {
 		tuiManager.screen.HideCursor()
 	} else {
 		tuiManager.screen.ShowCursor(screenX, screenY)

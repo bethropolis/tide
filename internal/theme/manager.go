@@ -9,17 +9,20 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/gdamore/tcell/v2"
 )
 
 // Manager holds loaded themes and manages the active theme.
 type Manager struct {
-	themes      map[string]*Theme // Map theme name (lowercase) -> Theme object
-	activeTheme *Theme
-	themesDir   string
-	mutex       sync.RWMutex
-	loadError   error // Store error from initial load
+	themes       map[string]*Theme // Map theme name (lowercase) -> Theme object
+	activeTheme  *Theme
+	themesDir    string
+	configDir    string // Store the base config directory
+	defaultTheme string // Path to the default theme file
+	mutex        sync.RWMutex
+	loadError    error // Store error from initial load
 }
 
 // NewManager creates and initializes a theme manager.
@@ -28,13 +31,15 @@ func NewManager() *Manager {
 		themes: make(map[string]*Theme),
 	}
 
-	// Find themes directory
+	// Find config directory
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		logger.Warnf("Could not find user config dir: %v. Themes cannot be loaded from default location.", err)
 		mgr.themesDir = "" // No directory to load from
 	} else {
-		mgr.themesDir = filepath.Join(configDir, "tide", "themes")
+		mgr.configDir = filepath.Join(configDir, "tide")
+		mgr.themesDir = filepath.Join(mgr.configDir, "themes")
+		mgr.defaultTheme = filepath.Join(mgr.configDir, "theme.toml") // Default theme at config root
 	}
 
 	// 1. Load built-in themes first (provides fallbacks)
@@ -50,16 +55,15 @@ func NewManager() *Manager {
 		}
 	}
 
-	// 3. Attempt to load the specific default user theme file
+	// 3. Attempt to load the specific default user theme file (now from config root)
 	var userDefaultTheme *Theme // Store if loaded successfully
-	if mgr.themesDir != "" {
-		defaultThemePath := filepath.Join(mgr.themesDir, "theme.toml") // The prioritized file
-		if _, err := os.Stat(defaultThemePath); err == nil {
+	if mgr.configDir != "" {
+		if _, err := os.Stat(mgr.defaultTheme); err == nil {
 			// File exists, try loading it
-			logger.Infof("Found default user theme file: %s", defaultThemePath)
-			theme, loadErr := LoadThemeFromFile(defaultThemePath)
+			logger.Infof("Found default user theme file: %s", mgr.defaultTheme)
+			theme, loadErr := LoadThemeFromFile(mgr.defaultTheme)
 			if loadErr != nil {
-				logger.Warnf("Failed to load default theme file '%s': %v", defaultThemePath, loadErr)
+				logger.Warnf("Failed to load default theme file '%s': %v", mgr.defaultTheme, loadErr)
 				// Store the error if needed, but don't overwrite loadDirErr yet
 				if mgr.loadError == nil {
 					mgr.loadError = loadErr
@@ -70,20 +74,21 @@ func NewManager() *Manager {
 				// Add/overwrite it in the map, ensuring priority
 				themeNameLower := stringsToLower(theme.Name)
 				if existing, ok := mgr.themes[themeNameLower]; ok {
-					logger.Infof("Default theme file ('%s') defines theme '%s', overriding previous definition from '%s'", defaultThemePath, theme.Name, existing.Name)
+					logger.Infof("Default theme file ('%s') defines theme '%s', overriding previous definition from '%s'",
+						mgr.defaultTheme, theme.Name, existing.Name)
 				} else {
-					logger.Infof("Loaded theme '%s' from default file '%s'", theme.Name, defaultThemePath)
+					logger.Infof("Loaded theme '%s' from default file '%s'", theme.Name, mgr.defaultTheme)
 				}
 				mgr.themes[themeNameLower] = theme
 			}
 		} else if !os.IsNotExist(err) {
 			// Error stating the file, other than not existing
-			logger.Warnf("Error checking for default theme file '%s': %v", defaultThemePath, err)
+			logger.Warnf("Error checking for default theme file '%s': %v", mgr.defaultTheme, err)
 			if mgr.loadError == nil {
 				mgr.loadError = err
 			}
 		} else {
-			logger.Debugf("Default user theme file not found: %s", defaultThemePath)
+			logger.Debugf("Default user theme file not found: %s", mgr.defaultTheme)
 		}
 	}
 	// Assign final overall load error if one occurred
@@ -178,8 +183,8 @@ func (m *Manager) LoadThemesFromDir() error {
 	loadedCount := 0
 	for _, file := range files {
 		fileNameLower := stringsToLower(file.Name())
-		// Skip the specific default theme file here, it's handled separately
-		if !file.IsDir() && strings.HasSuffix(fileNameLower, ".toml") && fileNameLower != "theme.toml" {
+		// No longer skip theme.toml - we treat all .toml files as themes
+		if !file.IsDir() && strings.HasSuffix(fileNameLower, ".toml") {
 			filePath := filepath.Join(m.themesDir, file.Name())
 			theme, err := LoadThemeFromFile(filePath) // Use the loader
 			if err != nil {
@@ -197,7 +202,7 @@ func (m *Manager) LoadThemesFromDir() error {
 			loadedCount++
 		}
 	}
-	logger.Infof("Loaded %d custom themes from directory scan (excluding theme.toml).", loadedCount)
+	logger.Infof("Loaded %d custom themes from directory scan.", loadedCount)
 	return nil
 }
 
@@ -231,11 +236,11 @@ func (m *Manager) SetTheme(name string) error {
 		// Update the global CurrentTheme reference for backward compatibility
 		SetCurrentTheme(theme)
 
-		// If we had access to the event manager, we could dispatch an event:
-		// eventManager.Dispatch(event.TypeThemeChanged, event.ThemeChangedData{
-		//    OldThemeName: oldThemeName,
-		//    NewThemeName: theme.Name,
-		// })
+		// Save the current theme as the default
+		if err := m.saveCurrentThemeAsDefault(); err != nil {
+			logger.Warnf("Failed to save theme '%s' as default: %v", theme.Name, err)
+			// Continue anyway - the theme change was successful
+		}
 	} else {
 		logger.Debugf("Theme '%s' already active, no change needed", name)
 	}
@@ -265,36 +270,142 @@ func (m *Manager) GetTheme(name string) (*Theme, bool) {
 	return theme, ok
 }
 
+// ThemeToToml converts a Theme to a TomlTheme for saving
+func themeToToml(theme *Theme) TomlTheme {
+	tomlTheme := TomlTheme{
+		Name:   theme.Name,
+		IsDark: theme.IsDark,
+		Styles: make(map[string]TomlStyleDef),
+	}
+
+	// Convert each style to a TomlStyleDef
+	for name, style := range theme.Styles {
+		fg, bg, attrs := style.Decompose()
+
+		// Convert colors to hex strings
+		fgStr := colorToHexString(fg)
+		bgStr := colorToHexString(bg)
+
+		// Extract style attributes
+		bold := (attrs & tcell.AttrBold) != 0
+		italic := (attrs & tcell.AttrItalic) != 0
+		underline := (attrs & tcell.AttrUnderline) != 0
+		reverse := (attrs & tcell.AttrReverse) != 0
+
+		// Create TomlStyleDef with pointers for optional fields
+		tomlStyle := TomlStyleDef{}
+		if fgStr != "" {
+			tomlStyle.Fg = &fgStr
+		}
+		if bgStr != "" {
+			tomlStyle.Bg = &bgStr
+		}
+
+		// Only set attributes that are true
+		if bold {
+			tomlStyle.Bold = &bold
+		}
+		if italic {
+			tomlStyle.Italic = &italic
+		}
+		if underline {
+			tomlStyle.Underline = &underline
+		}
+		if reverse {
+			tomlStyle.Reverse = &reverse
+		}
+
+		tomlTheme.Styles[name] = tomlStyle
+	}
+
+	return tomlTheme
+}
+
+// colorToHexString converts a tcell.Color to a hex string "#RRGGBB"
+func colorToHexString(color tcell.Color) string {
+	if color == tcell.ColorDefault {
+		return "default"
+	}
+	if color == tcell.ColorReset {
+		return "reset"
+	}
+
+	r, g, b := color.RGB()
+	return fmt.Sprintf("#%02x%02x%02x", r, g, b)
+}
+
 // SaveThemeToFile saves a theme to a TOML file in the themes directory
 func (m *Manager) SaveThemeToFile(themeName, fileName string) error {
 	m.mutex.RLock()
-	_, ok := m.themes[stringsToLower(themeName)]
+	theme, ok := m.themes[stringsToLower(themeName)]
 	m.mutex.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("theme '%s' not found", themeName)
 	}
 
-	// Implementation would create a TOML representation of the theme
-	// and write it to the specified file
+	// Ensure themes directory exists
+	if err := os.MkdirAll(m.themesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create themes directory: %w", err)
+	}
 
-	// For now, just return a not implemented error
-	return fmt.Errorf("saving themes is not yet implemented")
+	// Convert theme to TOML-compatible structure
+	tomlTheme := themeToToml(theme)
+
+	// Create the file
+	filePath := filepath.Join(m.themesDir, fileName)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create theme file '%s': %w", filePath, err)
+	}
+	defer file.Close()
+
+	// Write the TOML content
+	encoder := toml.NewEncoder(file)
+	if err := encoder.Encode(tomlTheme); err != nil {
+		return fmt.Errorf("failed to encode theme to TOML: %w", err)
+	}
+
+	logger.Infof("Theme '%s' saved to file '%s'", themeName, filePath)
+	return nil
 }
 
-// SaveCurrentThemeAsDefault saves the current theme as theme.toml
-func (m *Manager) SaveCurrentThemeAsDefault() error {
-	m.mutex.RLock()
-	currentTheme := m.activeTheme
-	m.mutex.RUnlock()
-
-	if currentTheme == nil {
+// saveCurrentThemeAsDefault saves the current theme as theme.toml in the config dir
+func (m *Manager) saveCurrentThemeAsDefault() error {
+	if m.activeTheme == nil {
 		return fmt.Errorf("no active theme to save")
 	}
 
-	// Implementation would create a default theme.toml file
-	// For now, just return a not implemented error
-	return fmt.Errorf("saving themes is not yet implemented")
+	// Ensure config directory exists
+	if err := os.MkdirAll(m.configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Convert theme to TOML-compatible structure
+	tomlTheme := themeToToml(m.activeTheme)
+
+	// Create the file
+	file, err := os.Create(m.defaultTheme)
+	if err != nil {
+		return fmt.Errorf("failed to create default theme file '%s': %w", m.defaultTheme, err)
+	}
+	defer file.Close()
+
+	// Write the TOML content
+	encoder := toml.NewEncoder(file)
+	if err := encoder.Encode(tomlTheme); err != nil {
+		return fmt.Errorf("failed to encode theme to TOML: %w", err)
+	}
+
+	logger.Infof("Default theme set to '%s' in file '%s'", m.activeTheme.Name, m.defaultTheme)
+	return nil
+}
+
+// SaveCurrentThemeAsDefault saves the current theme as theme.toml (public version)
+func (m *Manager) SaveCurrentThemeAsDefault() error {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	return m.saveCurrentThemeAsDefault()
 }
 
 // WatchForChanges sets up filesystem monitoring for theme directory changes
@@ -305,61 +416,4 @@ func (m *Manager) WatchForChanges() error {
 
 	// For now, just return a not implemented error
 	return fmt.Errorf("theme hot-reloading is not yet implemented")
-}
-
-// CreateThemeTemplate creates a sample theme.toml file in the themes directory
-func (m *Manager) CreateThemeTemplate() error {
-	if m.themesDir == "" {
-		return errors.New("theme directory path is not set")
-	}
-
-	templatePath := filepath.Join(m.themesDir, "example-theme.toml")
-
-	// Check if file already exists to avoid overwriting
-	if _, err := os.Stat(templatePath); err == nil {
-		return fmt.Errorf("template file already exists: %s", templatePath)
-	}
-
-	// Simple template content
-	template := `# Example Theme Configuration
-name = "My Custom Theme"
-is_dark = true
-
-[styles]
-# Default style applies to all text unless overridden
-[styles.Default]
-fg = "#FFFFFF"  # White text
-bg = "default"  # Default terminal background
-
-# Selection style
-[styles.Selection]
-reverse = true
-
-# Status bar styles
-[styles.StatusBar]
-fg = "#FFFFFF"
-bg = "#333333"
-
-# Syntax highlighting styles
-[styles.keyword]
-fg = "#569CD6"
-bold = true
-
-[styles.string]
-fg = "#CE9178"
-
-[styles.comment]
-fg = "#6A9955"
-italic = true
-
-# ... more styles as needed ...
-`
-
-	// Write template to file
-	if err := os.WriteFile(templatePath, []byte(template), 0644); err != nil {
-		return fmt.Errorf("failed to write template file: %w", err)
-	}
-
-	logger.Infof("Created theme template at: %s", templatePath)
-	return nil
 }

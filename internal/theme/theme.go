@@ -63,7 +63,7 @@ func init() {
 	dcCyan := tcell.NewHexColor(0x56b6c2)       // Soft Cyan (Types, Namespaces, Builtins)
 	dcBlue := tcell.NewHexColor(0x61afef)       // Soft Blue (Keywords)
 	dcMagenta := tcell.NewHexColor(0xc678dd)    // Soft Magenta/Purple (Maybe escapes, specific keywords?)
-
+    dcLineNumber := tcell.NewHexColor(0x4b5263) // darker grey for line numbers
 	// --- Base Style ---
 	// Use terminal background, DevComfort foreground
 	baseStyle := tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground) // <<< CHANGE HERE
@@ -82,6 +82,8 @@ func init() {
 			"StatusBarModified": tcell.StyleDefault.Background(dcBackground).Foreground(dcYellow), // Yellow for modified indicator
 			"StatusBarMessage":  tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground).Bold(true),
 			"StatusBarFind":     tcell.StyleDefault.Background(dcBackground).Foreground(dcGreen).Bold(true), // Green for find prefix
+
+			"LineNumber":      baseStyle.Foreground(dcLineNumber).Background(dcBackground),
 
 			// --- Syntax Highlighting ---
 			"keyword":   baseStyle.Foreground(dcBlue).Bold(true),      // Soft blue, bold

@@ -41,10 +41,10 @@ func (tc *ThemeCommand) Register() error {
 		return fmt.Errorf("failed to register theme command: %w", err)
 	}
 
-	// Also register as "theme-list" for convenience
-	err = tc.api.RegisterThemeCommand("theme-list", tc.themeListCommand)
+	// Also register as "themelist" (without hyphen) for better compatibility
+	err = tc.api.RegisterThemeCommand("themelist", tc.themeListCommand)
 	if err != nil {
-		return fmt.Errorf("failed to register theme-list command: %w", err)
+		return fmt.Errorf("failed to register themelist command: %w", err)
 	}
 
 	return nil
@@ -67,6 +67,7 @@ func (tc *ThemeCommand) themeCommand(args []string) error {
 	// 2. Update the global CurrentTheme
 	// 3. Update the app's activeTheme
 	// 4. Trigger a redraw
+	// 5. Save the theme as default
 	err := tc.api.SetTheme(themeName)
 	if err != nil {
 		// Theme not found, list available themes
@@ -76,7 +77,7 @@ func (tc *ThemeCommand) themeCommand(args []string) error {
 	}
 
 	// Inform the user
-	tc.api.SetStatusMessage("Theme set to: %s", themeName)
+	tc.api.SetStatusMessage("Theme set to: %s (saved as default)", themeName)
 	logger.Infof("Theme switched to: %s", themeName)
 
 	return nil
