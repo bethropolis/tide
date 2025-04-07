@@ -73,3 +73,9 @@ type AppQuitData struct{}
 
 // AppReadyData could contain initial config or state later.
 type AppReadyData struct{}
+
+// ThemeChangedData holds theme change event data
+type ThemeChangedData struct {
+	OldThemeName string
+	NewThemeName string
+}
