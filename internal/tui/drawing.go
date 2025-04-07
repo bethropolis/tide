@@ -58,7 +58,7 @@ func isPositionWithin(pos, start, end types.Position) bool {
 // DrawBuffer draws the *visible* portion with selection & search highlighting.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 	// Define styles
-	style := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
+    style := tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(tcell.ColorDefault)
 	selectionStyle := style.Reverse(true)
 	searchHighlightStyle := style.Background(tcell.ColorYellow).Foreground(tcell.ColorBlack)
 

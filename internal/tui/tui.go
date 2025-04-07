@@ -21,7 +21,7 @@ func New() (*TUI, error) {
 	if err := s.Init(); err != nil {
 		return nil, fmt.Errorf("failed to initialize tcell screen: %w", err)
 	}
-	defStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset)
+    defStyle := tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(tcell.ColorDefault)
 	s.SetStyle(defStyle)
 	return &TUI{screen: s}, nil
 }

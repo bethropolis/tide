@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -23,15 +24,16 @@ import (
 
 // App encapsulates the core components and main loop of the editor.
 type App struct {
-	tuiManager    *tui.TUI
-	editor        *core.Editor
-	statusBar     *statusbar.StatusBar
-	eventManager  *event.Manager
-	pluginManager *plugin.Manager
-	modeHandler   *modehandler.ModeHandler // Add ModeHandler
-	editorAPI     plugin.EditorAPI
-	filePath      string
-	highlighter   *highlighter.Highlighter // Hold highlighter instance
+	tuiManager          *tui.TUI
+	editor              *core.Editor
+	statusBar           *statusbar.StatusBar
+	eventManager        *event.Manager
+	pluginManager       *plugin.Manager
+	modeHandler         *modehandler.ModeHandler // Add ModeHandler
+	editorAPI           plugin.EditorAPI
+	filePath            string
+	highlighter         *highlighter.Highlighter // Hold highlighter instance
+	highlightingManager *HighlightingManager     // Add HighlightingManager
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -103,6 +105,13 @@ func NewApp(filePath string) (*App, error) {
 		statusMessageTime: time.Time{},
 	}
 
+	// --- Create Highlighting Manager ---
+	appInstance.highlightingManager = NewHighlightingManager(
+		editor,
+		highlighterSvc,
+		appInstance.requestRedraw,
+	)
+
 	// --- Create Editor API adapter ---
 	editorAPI := newEditorAPI(appInstance)
 	appInstance.editorAPI = editorAPI
@@ -120,6 +129,9 @@ func NewApp(filePath string) (*App, error) {
 	eventManager.Subscribe(event.TypeBufferSaved, appInstance.handleBufferSavedForStatus)
 	eventManager.Subscribe(event.TypeBufferLoaded, appInstance.handleBufferLoadedForStatus)
 
+	// --- Subscribe to Buffer Modifications for Highlighting ---
+	eventManager.Subscribe(event.TypeBufferModified, appInstance.handleBufferModifiedForHighlighting)
+
 	// --- Initialize Plugins (triggers RegisterCommand via API) ---
 	pluginManager.InitializePlugins(editorAPI)
 
@@ -127,8 +139,47 @@ func NewApp(filePath string) (*App, error) {
 	width, height := tuiManager.Size()
 	editor.SetViewSize(width, height)
 
-	// Trigger initial syntax highlighting
-	editor.TriggerSyntaxHighlight()
+	// --- Initial Syntax Highlighting (with enhanced logging) ---
+	logger.Debugf("App: Beginning initial syntax highlight process...")
+	lang := appInstance.highlighter.GetLanguage(filePath)
+	if lang != nil {
+		logger.Debugf("App: Language detected for '%s', proceeding with highlighting", filePath)
+
+		// Use context.Background() for initial sync parse
+		initialCtx := context.Background()
+		logger.Debugf("App: Getting buffer content for initial highlight...")
+		bufContent := buf.Bytes()
+		logger.Debugf("App: Buffer size for highlighting: %d bytes", len(bufContent))
+
+		logger.Debugf("App: Calling highlighter.HighlightBuffer synchronously...")
+		startTime := time.Now()
+		initialHighlights, initialTree, err := appInstance.highlighter.HighlightBuffer(initialCtx, buf, lang, nil)
+		duration := time.Since(startTime)
+
+		if err != nil {
+			logger.Warnf("App: Initial highlighting failed: %v", err)
+		} else {
+			highlightCount := 0
+			lineCount := 0
+			for lineNum, ranges := range initialHighlights {
+				lineCount++
+				highlightCount += len(ranges)
+				if lineCount <= 3 { // Log first few lines as samples
+					logger.Debugf("App: Line %d has %d highlight ranges", lineNum, len(ranges))
+				}
+			}
+
+			logger.Debugf("App: Initial highlighting complete in %v. Found %d highlight ranges across %d lines.",
+				duration, highlightCount, lineCount)
+
+			logger.Debugf("App: Updating editor with initial highlights...")
+			editor.UpdateSyntaxHighlights(initialHighlights, initialTree)
+			logger.Debugf("App: Editor highlighting state updated successfully")
+		}
+	} else {
+		logger.Debugf("App: No language detected for initial highlight of '%s'", filePath)
+		editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil) // Ensure cleared state
+	}
 
 	return appInstance, nil
 }
@@ -253,6 +304,20 @@ func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
 	a.editor.TriggerSyntaxHighlight() // Re-highlight on load
 	a.requestRedraw()                 // Request redraw after potential highlight changes
 	return false
+}
+
+// handleBufferModifiedForHighlighting processes buffer modification events
+func (a *App) handleBufferModifiedForHighlighting(e event.Event) bool {
+	if data, ok := e.Data.(event.BufferModifiedData); ok {
+		// Buffer was modified, accumulate the edit info
+		logger.Debugf("App: Buffer modified event received, accumulating edit info.")
+		a.highlightingManager.AccumulateEdit(data.Edit)
+	} else {
+		logger.Warnf("App: Received BufferModified event with unexpected data type: %T", e.Data)
+		// Fall back to old method if edit info isn't available
+		logger.Debugf("App: Falling back to non-incremental highlighting due to missing edit info")
+	}
+	return false // Allow other handlers for BufferModified to run
 }
 
 // SetStatusMessage updates the status message.

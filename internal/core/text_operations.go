@@ -5,17 +5,17 @@ import (
 	"unicode/utf8"
 
 	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/types"
 )
 
 func (e *Editor) InsertRune(r rune) error {
-	// TODO: More advanced behavior - delete selection before insert?
 	e.ClearSelection() // Clear selection when typing
 
 	runeBytes := make([]byte, utf8.RuneLen(r))
 	utf8.EncodeRune(runeBytes, r)
 
 	currentPos := e.Cursor
-	err := e.buffer.Insert(currentPos, runeBytes)
+	editInfo, err := e.buffer.Insert(currentPos, runeBytes)
 	if err != nil {
 		return err
 	}
@@ -30,6 +30,12 @@ func (e *Editor) InsertRune(r rune) error {
 
 	// Ensure cursor remains visible after insertion/movement
 	e.ScrollToCursor()
+
+	// Dispatch event WITH EditInfo
+	if e.eventManager != nil {
+		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
+	}
+
 	return nil
 }
 
@@ -41,19 +47,26 @@ func (e *Editor) InsertNewLine() error {
 }
 
 func (e *Editor) DeleteBackward() error {
+	var editInfo types.EditInfo
+	var err error
+
 	// If selection exists, delete selection instead of single char
 	if e.HasSelection() {
 		start, end, _ := e.GetSelection()
-		e.ClearSelection()                 // Clear selection state first
-		err := e.buffer.Delete(start, end) // Delete range
+		e.ClearSelection() // Clear selection state first
+
+		editInfo, err = e.buffer.Delete(start, end) // Delete range
 		if err != nil {
 			return fmt.Errorf("buffer delete failed: %w", err)
 		}
+
 		e.Cursor = start // Move cursor to start of deleted range
 		e.ScrollToCursor()
+
 		if e.eventManager != nil {
-			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		}
+
 		return nil
 	}
 
@@ -74,36 +87,46 @@ func (e *Editor) DeleteBackward() error {
 		return nil
 	}
 
-	err := e.buffer.Delete(start, end)
+	editInfo, err = e.buffer.Delete(start, end)
 	if err != nil {
 		return fmt.Errorf("buffer delete failed: %w", err)
 	}
 
 	// Cursor moves to the 'start' position
 	e.Cursor = start
+
 	// Ensure cursor is visible after deletion/movement
 	e.ScrollToCursor()
-	if e.eventManager != nil {
-		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+
+	if e.eventManager != nil && (editInfo != types.EditInfo{}) {
+		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 	}
+
 	return nil
 }
 
 // DeleteForward deletes and scrolls if needed.
 func (e *Editor) DeleteForward() error {
+	var editInfo types.EditInfo
+	var err error
+
 	// If selection exists, delete selection
 	if e.HasSelection() {
 		start, end, _ := e.GetSelection()
 		e.ClearSelection()
-		err := e.buffer.Delete(start, end)
+
+		editInfo, err = e.buffer.Delete(start, end)
 		if err != nil {
 			return fmt.Errorf("buffer delete failed: %w", err)
 		}
+
 		e.Cursor = start
 		e.ScrollToCursor()
+
 		if e.eventManager != nil {
-			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+			e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		}
+
 		return nil
 	}
 
@@ -126,17 +149,20 @@ func (e *Editor) DeleteForward() error {
 		return nil
 	}
 
-	err = e.buffer.Delete(start, end)
+	editInfo, err = e.buffer.Delete(start, end)
 	if err != nil {
 		return fmt.Errorf("buffer delete failed: %w", err)
 	}
 
 	// Cursor position remains at 'start'
 	e.Cursor = start
+
 	// Let's be safe and scroll anyway
 	e.ScrollToCursor()
-	if e.eventManager != nil {
-		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+
+	if e.eventManager != nil && (editInfo != types.EditInfo{}) {
+		e.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 	}
+
 	return nil
 }
