@@ -1,0 +1,429 @@
+#
+# Tide Editor Theme Template
+#
+# This template includes all possible style keys used by the syntax highlighters
+# Each style can define the following properties:
+# - fg: foreground color as hex "#RRGGBB", name, or "default"
+# - bg: background color as hex "#RRGGBB", name, or "default"
+# - bold: true/false
+# - italic: true/false
+# - underline: true/false
+# - reverse: true/false
+# - blink: true/false
+# - dim: true/false
+#
+# Note: Not all terminal emulators support all style attributes
+
+# Theme Metadata
+name = "My Custom Theme"
+is_dark = true  # Set to false for light themes
+
+[styles]
+#
+# -- UI Elements --
+#
+[styles.Default]
+# Base style for all text
+fg = "#c5cdd9"  # Light gray text
+bg = "#2a2f38"  # Dark background
+
+[styles.Selection]
+# Text selection highlight
+reverse = true  # Swap foreground and background
+
+[styles.SearchHighlight]
+# Search result highlights
+fg = "#000000"  # Black
+bg = "#ff9900"  # Orange
+
+[styles.StatusBar]
+# Status bar at bottom of screen
+fg = "#c5cdd9"  # Light gray
+bg = "#2a2f38"  # Dark blue-gray
+
+[styles.StatusBarModified]
+# Modified indicator in status bar
+fg = "#e5c07b"  # Yellow
+bg = "#2a2f38"  # Dark blue-gray
+
+[styles.StatusBarMessage]
+# Messages in status bar
+fg = "#c5cdd9"  # Light gray
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+
+[styles.StatusBarFind]
+# Find text prefix in status bar
+fg = "#98c379"  # Green
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+
+#
+# -- Basic Syntax Elements --
+#
+[styles.keyword]
+# Keywords (if, else, func, etc)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.string]
+# String literals
+fg = "#98c379"  # Green
+
+[styles.comment]
+# Comments
+fg = "#5c6370"  # Gray
+italic = true
+
+[styles.number]
+# Numeric literals
+fg = "#d19a66"  # Orange
+
+[styles.type]
+# Type names
+fg = "#56b6c2"  # Cyan
+
+[styles.function]
+# Function names
+fg = "#e5c07b"  # Yellow
+
+[styles.constant]
+# Constants (true, false, nil)
+fg = "#d19a66"  # Orange
+
+[styles.variable]
+# Variable names
+fg = "#c5cdd9"  # Light gray
+
+[styles.operator]
+# Operators (+, -, *, /, etc)
+fg = "#c5cdd9"  # Light gray
+
+[styles.namespace]
+# Namespaces, modules, packages
+fg = "#56b6c2"  # Cyan
+
+[styles.label]
+# Labels for goto statements, etc.
+fg = "#c5cdd9"  # Light gray
+
+#
+# -- String Variants --
+#
+[styles.string.import]
+# Import path strings
+fg = "#98c379"  # Green
+
+[styles.string.escape]
+# Escape sequences in strings (\n, \t, etc)
+fg = "#c678dd"  # Magenta
+
+[styles.string.special]
+# Special strings (e.g., rune literals in Go)
+fg = "#c678dd"  # Magenta
+
+[styles.string.regexp]
+# Regular expression literals
+fg = "#e06c75"  # Red-orange
+
+#
+# -- Type Variants --
+#
+[styles.type.builtin]
+# Built-in types (int, string, bool)
+fg = "#56b6c2"  # Cyan
+bold = true
+
+[styles.type.definition]
+# Type definitions (class, struct, etc)
+fg = "#56b6c2"  # Cyan
+bold = true
+
+#
+# -- Function Variants --
+#
+[styles.function.definition]
+# Function definitions
+fg = "#e5c07b"  # Yellow
+
+[styles.function.call]
+# Function calls
+fg = "#e5c07b"  # Yellow
+
+[styles.function.builtin]
+# Built-in functions (len, make, etc)
+fg = "#56b6c2"  # Cyan
+italic = true
+
+[styles.function.method]
+# Method definitions
+fg = "#e5c07b"  # Yellow
+
+[styles.function.method.call]
+# Method calls
+fg = "#e5c07b"  # Yellow
+
+[styles.function.macro]
+# Macro invocations (Rust)
+fg = "#c678dd"  # Magenta
+
+#
+# -- Variable Variants --
+#
+[styles.variable.member]
+# Structure/class members
+fg = "#c5cdd9"  # Light gray
+
+[styles.variable.parameter]
+# Function parameters
+fg = "#c5cdd9"  # Light gray
+italic = true
+
+[styles.variable.builtin]
+# Built-in variables (this, self, etc)
+fg = "#56b6c2"  # Cyan
+
+#
+# -- Punctuation --
+#
+[styles.punctuation]
+# Generic punctuation
+fg = "#5c6370"  # Gray
+
+[styles.punctuation.bracket]
+# Brackets (), [], {}
+fg = "#5c6370"  # Gray
+
+[styles.punctuation.delimiter]
+# Delimiters (comma, semicolon, etc)
+fg = "#5c6370"  # Gray
+
+[styles.punctuation.special]
+# Special punctuation (e.g., template literals ${})
+fg = "#c678dd"  # Magenta
+
+#
+# -- Keyword Variants --
+#
+[styles.keyword.function]
+# Function definition keywords (func, def, fn)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.type]
+# Type-related keywords (struct, class, etc)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.operator]
+# Keywords that are operators (typeof, instanceof)
+fg = "#61afef"  # Blue
+
+[styles.keyword.storage]
+# Storage keywords (var, const, let)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.import]
+# Import/include keywords
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control]
+# Generic control flow keywords
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.flow]
+# Flow control (break, continue, return)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.return]
+# Return statements
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.yield]
+# Yield statements
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.import]
+# Import-specific control
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.exception]
+# Exception handling (try, catch, throw)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.context]
+# Context managers (with in Python)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.conditional]
+# Conditionals (if, else, switch)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.repeat]
+# Loops (for, while, do)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.concurrent]
+# Concurrency keywords (go, select)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.control.defer]
+# Deferred execution
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.conditional]
+# General conditionals
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.conditional.ternary]
+# Ternary operators (? :)
+fg = "#61afef"  # Blue
+
+[styles.keyword.repeat]
+# Loop keywords
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.directive]
+# Compiler directives (#include, shebang)
+fg = "#c678dd"  # Magenta
+bold = true
+
+[styles.keyword.modifier]
+# Modifiers (public, static, etc)
+fg = "#61afef"  # Blue
+
+[styles.keyword.coroutine]
+# Async/await keywords
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.exception]
+# Exception keywords
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.keyword.debug]
+# Debug-related keywords
+fg = "#c678dd"  # Magenta
+bold = true
+
+#
+# -- Operator Variants --
+#
+[styles.operator.logical]
+# Logical operators (and, or, not)
+fg = "#61afef"  # Blue
+
+#
+# -- Constants & Special Values --
+#
+[styles.constant.builtin]
+# Built-in constants (true, false, nil)
+fg = "#d19a66"  # Orange
+
+[styles.boolean]
+# Boolean values
+fg = "#d19a66"  # Orange
+
+[styles.number.float]
+# Floating point numbers
+fg = "#d19a66"  # Orange
+
+[styles.character]
+# Character literals
+fg = "#98c379"  # Green
+
+[styles.character.special]
+# Special characters
+fg = "#c678dd"  # Magenta
+
+#
+# -- Other Elements --
+#
+[styles.module]
+# Module names
+fg = "#98c379"  # Green
+
+[styles.module.builtin]
+# Built-in modules
+fg = "#98c379"  # Green
+bold = true
+
+[styles.constructor]
+# Constructor functions
+fg = "#e5c07b"  # Yellow
+bold = true
+
+[styles.attribute]
+# Attributes/decorators
+fg = "#c678dd"  # Magenta
+
+[styles.attribute.builtin]
+# Built-in attributes
+fg = "#c678dd"  # Magenta
+italic = true
+
+[styles.comment.documentation]
+# Documentation comments
+fg = "#5c6370"  # Gray
+italic = true
+
+#
+# -- Legacy/Fallback Styles --
+#
+# These are included for backward compatibility
+# with older highlight queries
+#
+[styles.control]
+# Generic control keywords (fallback)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.builtin]
+# Built-in items (fallback)
+fg = "#56b6c2"  # Cyan
+
+[styles.import]
+# Import paths (fallback)
+fg = "#98c379"  # Green
+
+[styles.escape]
+# Escape sequences (fallback)
+fg = "#c678dd"  # Magenta
+
+[styles.repeat]
+# Loop constructs (fallback)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.conditional]
+# Conditionals (fallback)
+fg = "#61afef"  # Blue
+bold = true
+
+[styles.definition]
+# Definitions (fallback)
+fg = "#e5c07b"  # Yellow
+
+[styles.call]
+# Function calls (fallback)
+fg = "#e5c07b"  # Yellow
+
+[styles.member]
+# Object members (fallback)
+fg = "#c5cdd9"  # Light gray
