@@ -150,6 +150,15 @@ func init() {
 			"keyword.coroutine":           baseStyle.Foreground(dcBlue).Bold(true),         // async/await
 			"punctuation.special":         baseStyle.Foreground(dcMagenta),                 // Template literal ${
 
+			// Rust specific styles
+			"function.macro":    baseStyle.Foreground(dcMagenta),              // Macros in Rust
+			"attribute.builtin": baseStyle.Foreground(dcMagenta).Italic(true), // Built-in attributes
+			"keyword.modifier":  baseStyle.Foreground(dcBlue),                 // pub, mut, etc.
+			"keyword.debug":     baseStyle.Foreground(dcMagenta).Bold(true),   // dbg! macro
+			"keyword.exception": baseStyle.Foreground(dcMagenta).Bold(true),   // panic! assert! macros
+			"number.float":      baseStyle.Foreground(dcOrange),               // Float literals
+			"character":         baseStyle.Foreground(dcGreen),                // Character literals
+
 			// Fallbacks (will inherit background from baseStyle)
 			"control":     baseStyle.Foreground(dcBlue).Bold(true), // -> keyword
 			"builtin":     baseStyle.Foreground(dcCyan),            // -> type/function.builtin
