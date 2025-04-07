@@ -4,6 +4,7 @@ package tui
 import (
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/logger"
+	"github.com/bethropolis/tide/internal/theme" // Import theme package
 	"github.com/bethropolis/tide/internal/types" // Needed for Position type and HighlightRegion
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg"
@@ -55,51 +56,68 @@ func isPositionWithin(pos, start, end types.Position) bool {
 	return true
 }
 
-// DrawBuffer draws the *visible* portion with selection & search highlighting.
-func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
-	// Define styles
-    style := tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(tcell.ColorDefault)
-	selectionStyle := style.Reverse(true)
-	searchHighlightStyle := style.Background(tcell.ColorYellow).Foreground(tcell.ColorBlack)
+// DrawBuffer draws the *visible* portion using the provided theme.
+// It now takes an activeTheme argument.
+func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) {
 
-	// Example Syntax Styles (map style name from highlighter to tcell.Style)
-	syntaxStyles := map[string]tcell.Style{
-		"keyword":  style.Foreground(tcell.ColorBlue).Bold(true),
-		"string":   style.Foreground(tcell.ColorGreen),
-		"comment":  style.Foreground(tcell.ColorGray),
-		"type":     style.Foreground(tcell.ColorTeal),
-		"function": style.Foreground(tcell.ColorYellow),
-		// Add more styles based on query capture names
+	// Use the provided theme. If nil, log warning and use a basic default.
+	if activeTheme == nil {
+		// This case should ideally not happen if wired correctly in App.
+		// If it does, use the package default or a very basic tcell style.
+		logger.Warnf("DrawBuffer called with nil theme, using package default.")
+		activeTheme = &theme.DevComfortDark // Assuming DefaultDark is accessible
+		if activeTheme == nil { // Absolute fallback
+			activeTheme = &theme.Theme{ Styles: map[string]tcell.Style{"Default": tcell.StyleDefault} }
+		}
 	}
+
+	// Get base styles *from the theme*
+	style := activeTheme.GetStyle("Default")
+	selectionStyle := activeTheme.GetStyle("Selection")
+	searchHighlightStyle := activeTheme.GetStyle("SearchHighlight")
+
+	// NOTE: The hardcoded `syntaxStyles` map is REMOVED. We look up from activeTheme.
 
 	width, height := tuiManager.Size()
 	viewY, viewX := editor.GetViewport()
 
 	// Get normalized selection range and active status
+	// FIX 1: Use the correct method name 'GetSelection'
 	selStart, selEnd, selectionActive := editor.GetSelection()
-	highlights := editor.GetHighlights() // Get search highlights from editor
+
+	// Get search highlights
+	highlights := editor.GetHighlights()
 
 	statusBarHeight := 1
 	viewHeight := height - statusBarHeight
 	if viewHeight <= 0 || width <= 0 {
-		return
+		return // Nothing to draw
 	}
 
 	lines := editor.GetBuffer().Lines()
 
-	// --- Pre-calculate highlights for visible lines (Optimization) ---
-	// Create a map for quick lookup: map[lineIdx][]HighlightRegion
+	// --- Pre-calculate search highlights for visible lines ---
 	visibleHighlights := make(map[int][]types.HighlightRegion)
 	for _, h := range highlights {
+		// Basic visibility check (could be refined for multi-line highlights)
 		if h.Start.Line >= viewY && h.Start.Line < viewY+viewHeight {
 			visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h)
-		}
-		// TODO: Handle highlights spanning multiple lines if necessary
+		} else if h.End.Line >= viewY && h.End.Line < viewY+viewHeight {
+             // Also include if it ends in the viewport
+             visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h) // Use Start.Line as key for simplicity
+        } else if h.Start.Line < viewY && h.End.Line >= viewY+viewHeight {
+             // Also include if it spans the entire viewport
+             visibleHighlights[h.Start.Line] = append(visibleHighlights[h.Start.Line], h)
+        }
 	}
 
+
+	// --- Draw Loop ---
 	for screenY := 0; screenY < viewHeight; screenY++ {
 		bufferLineIdx := screenY + viewY
 		if bufferLineIdx < 0 || bufferLineIdx >= len(lines) {
+			// Draw empty lines or tildes for lines beyond the buffer? Optional.
+			// For now, just skip.
 			continue
 		}
 
@@ -107,16 +125,16 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 		lineStr := string(lineBytes)
 		gr := uniseg.NewGraphemes(lineStr)
 
-		// Get highlights specific to this line (from pre-calculated map)
-		lineHighlights := visibleHighlights[bufferLineIdx]
+		// Get search highlights specific to this line
+		lineSearchHighlights := visibleHighlights[bufferLineIdx] // Check map for search highlights
 
-		// Get syntax highlights for this specific line
+		// Get syntax highlights for this specific line (uses internal mutex)
 		lineSyntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
 
 		currentVisualX := 0
 		currentRuneIndex := 0 // Track rune index on the line
 
-		for gr.Next() {
+		for gr.Next() { // Iterate through grapheme clusters
 			clusterRunes := gr.Runes()
 			clusterWidth := gr.Width()
 			clusterVisualStart := currentVisualX
@@ -125,7 +143,7 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 			// Check if cluster is horizontally visible
 			if clusterVisualEnd > viewX && clusterVisualStart < viewX+width {
 				// Determine style for this cluster
-				currentStyle := style // Start with default
+				currentStyle := style // Start with theme's default style
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
 
 				// --- Apply Syntax Highlighting ---
@@ -133,49 +151,70 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 				for _, synHL := range lineSyntaxHighlights {
 					// Check if current rune index is within this syntax range
 					if currentRuneIndex >= synHL.StartCol && currentRuneIndex < synHL.EndCol {
-						if styleFromTheme, ok := syntaxStyles[synHL.StyleName]; ok {
-							currentStyle = styleFromTheme
-						}
+						// FIX 2: Use theme.GetStyle for syntax lookup
+						currentStyle = activeTheme.GetStyle(synHL.StyleName)
 						break // Apply first syntax highlight found for this position
 					}
 				}
 
 				// --- Apply Search Highlight Style (Overrides Syntax) ---
-				// Check if currentPos is within any search highlight region for this line
-				for _, h := range lineHighlights {
+				for _, h := range lineSearchHighlights { // Iterate search highlights for this line
 					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {
-						currentStyle = searchHighlightStyle
-						break // Apply first match found
+						currentStyle = searchHighlightStyle // Already got this from theme
+						break
 					}
 				}
 
-				// --- Apply Selection Style (Overrides Search Highlight) ---
+				// --- Apply Selection Highlight (Overrides Everything) ---
 				if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
-					currentStyle = selectionStyle // Apply selection style
+					currentStyle = selectionStyle // Already got this from theme
 				}
 
 				// --- Draw the Cluster ---
 				screenX := clusterVisualStart - viewX
-				visualOffsetInCluster := 0 // Tracks visual offset *within* the cluster when drawing runes
-				for _, r := range clusterRunes {
-					// Calculate where this specific rune *starts* on screen
-					// Use the visualOffsetInCluster to handle runes within a wide cluster correctly
+				visualOffsetInCluster := 0
+				for i, r := range clusterRunes {
 					calculatedScreenX := screenX + visualOffsetInCluster
-
 					if calculatedScreenX >= 0 && calculatedScreenX < width {
-						if r == '\t' {
-							// TODO: Fix tab expansion with visual widths
-							tuiManager.screen.SetContent(calculatedScreenX, screenY, ' ', nil, currentStyle)
-						} else {
-							tuiManager.screen.SetContent(calculatedScreenX, screenY, r, nil, currentStyle)
+						// Use first rune of cluster, others are combining chars for tcell
+						mainRune := r
+						var combining []rune
+						if i > 0 { // Should not happen if we draw cluster at once? Let tcell handle it.
+							// continue // Skip drawing combining chars directly? tcell handles this.
+						}
+						if i == 0 {
+                            combining = clusterRunes[1:]
+                        }
+
+
+						if mainRune == '\t' {
+							// TODO: Tab expansion needs more work with themes/widths
+							// For now, draw a space using the current style
+                            for tabX := 0; tabX < 4; tabX++ { // Assuming tab width 4 for now
+                                 drawX := calculatedScreenX + tabX
+                                 if drawX < width {
+                                     tuiManager.screen.SetContent(drawX, screenY, ' ', nil, currentStyle)
+                                 }
+                            }
+
+						} else if i == 0 { // Draw only the first rune + combining chars
+							tuiManager.screen.SetContent(calculatedScreenX, screenY, mainRune, combining, currentStyle)
 						}
 					}
-					// Use uniseg to find the width of the *current rune* being drawn
-					runeWidth := uniseg.StringWidth(string(r))
-					if runeWidth < 1 {
-						runeWidth = 1 // Treat zero-width runes as taking one logical cell space for offset calculation
-					}
-					visualOffsetInCluster += runeWidth
+
+                    // Advance offset within the *current* screen cell for wide chars
+                    // Only advance if it's the *first* rune of the cluster being drawn
+                    if i == 0 {
+                         runeWidth := clusterWidth // Use cluster width
+                         // Fill remaining cells of a wide character cluster
+                         for cw := 1; cw < runeWidth; cw++ {
+                              fillX := calculatedScreenX + cw
+                              if fillX >= 0 && fillX < width {
+                                   tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
+                              }
+                         }
+                         visualOffsetInCluster += runeWidth
+                    }
 				}
 			}
 
@@ -183,12 +222,14 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor) {
 			currentVisualX += clusterWidth
 			currentRuneIndex += len(clusterRunes)
 
+			// Optimization: Stop drawing line if we've gone past the edge
 			if currentVisualX >= viewX+width {
-				break // Optimization
+				break
 			}
 		}
 	}
 }
+
 
 // DrawCursor positions the terminal cursor using visual width calculations.
 func DrawCursor(tuiManager *TUI, editor *core.Editor) {
@@ -201,17 +242,16 @@ func DrawCursor(tuiManager *TUI, editor *core.Editor) {
 	if err == nil {
 		cursorVisualCol = calculateVisualColumn(lineBytes, cursor.Col)
 	} else {
-		// Fallback or log error if line cannot be read
 		logger.Debugf("DrawCursor: Error getting line %d: %v", cursor.Line, err)
 	}
 
 	// Calculate screen position based on viewport and visual column
-	screenX := cursorVisualCol - viewX // Position relative to viewport start
-	screenY := cursor.Line - viewY     // Simple offset
+	screenX := cursorVisualCol - viewX
+	screenY := cursor.Line - viewY
 
 	// Hide cursor if it's outside the drawable buffer area
 	width, height := tuiManager.Size()
-	statusBarHeight := 1
+	statusBarHeight := 1 // Assuming status bar height is 1
 	viewHeight := height - statusBarHeight
 	if screenX < 0 || screenX >= width || screenY < 0 || screenY >= viewHeight || viewHeight <= 0 || width <= 0 {
 		tuiManager.screen.HideCursor()

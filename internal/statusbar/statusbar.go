@@ -7,6 +7,7 @@ import (
 	"time"
 
 	// "github.com/bethropolis/tide/internal/core" // Might need editor state later
+	"github.com/bethropolis/tide/internal/theme" // Import theme package
 	"github.com/bethropolis/tide/internal/types" // For cursor position etc.
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg" // For proper Unicode width calculation
@@ -14,20 +15,12 @@ import (
 
 // Config defines the appearance and behavior of the status bar.
 type Config struct {
-	StyleDefault   tcell.Style // Default background/foreground
-	StyleModified  tcell.Style // Style for the modified indicator
-	StyleMessage   tcell.Style // Style for temporary messages
-	StyleFindInput tcell.Style // Style for find mode input
 	MessageTimeout time.Duration
 }
 
 // DefaultConfig provides sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		StyleDefault:   tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorBlue),
-		StyleModified:  tcell.StyleDefault.Foreground(tcell.ColorYellow).Background(tcell.ColorBlue).Bold(true),
-		StyleMessage:   tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlue).Bold(true),
-		StyleFindInput: tcell.StyleDefault.Foreground(tcell.ColorGreen).Background(tcell.ColorBlue).Bold(true), // Green for find input
 		MessageTimeout: 4 * time.Second,
 	}
 }
@@ -117,11 +110,22 @@ func (sb *StatusBar) getDefaultDisplayText() string {
 }
 
 // Draw renders the status bar onto the screen using visual widths.
-func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
+func (sb *StatusBar) Draw(screen tcell.Screen, width, height int, activeTheme *theme.Theme) {
 	if height <= 0 || width <= 0 {
 		return
 	}
 	y := height - 1 // Status bar is always the last line
+
+	// Ensure theme is valid
+	if activeTheme == nil {
+		activeTheme = theme.GetCurrentTheme() // Fallback to current theme
+	}
+
+	// Get styles from the provided theme
+	baseStyle := activeTheme.GetStyle("StatusBar")
+	activeTheme.GetStyle("StatusBarModified")
+	messageStyle := activeTheme.GetStyle("StatusBarMessage")
+	findStyle := activeTheme.GetStyle("StatusBarFind")
 
 	sb.mu.Lock() // Lock for potential modification of tempMessageTime
 	// Clear expired temporary message *before* getting display text
@@ -140,13 +144,13 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int) {
 	if isTempMsgActive {
 		text = sb.tempMessage
 		if isFindInput {
-			style = sb.config.StyleFindInput // Use find input style
+			style = findStyle // Use find input style
 		} else {
-			style = sb.config.StyleMessage // Use regular message style
+			style = messageStyle // Use regular message style
 		}
 	} else {
 		text = sb.getDefaultDisplayText()
-		style = sb.config.StyleDefault // Use default style
+		style = baseStyle // Use default style
 	}
 
 	sb.mu.Unlock() // Unlock after accessing/modifying state

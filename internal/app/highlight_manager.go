@@ -130,8 +130,8 @@ func (hm *HighlightingManager) runHighlightUpdate() {
 			logger.Debugf("HighlightingManager: No previous tree found, performing full parse.")
 		}
 
-		// --- Perform Highlighting ---
-		lang := hm.highlighter.GetLanguage(fp)
+		// --- Get Language AND Query bytes ---
+		lang, queryBytes := hm.highlighter.GetLanguage(fp) // Get both language and query
 		if lang == nil {
 			logger.Debugf("HighlightingManager: No language detected for '%s', clearing highlights.", fp)
 			hm.editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil)
@@ -139,8 +139,9 @@ func (hm *HighlightingManager) runHighlightUpdate() {
 			return
 		}
 
-		// Perform the actual highlighting with the edited tree
-		newHighlights, newTree, err := hm.highlighter.HighlightBuffer(taskCtx, buf, lang, oldTree)
+		// --- Perform Highlighting ---
+		// Pass language AND query bytes to HighlightBuffer
+		newHighlights, newTree, err := hm.highlighter.HighlightBuffer(taskCtx, buf, lang, queryBytes, oldTree)
 
 		// Check for errors or cancellation
 		if err != nil {

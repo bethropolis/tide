@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt" // Keep fmt if needed for error formatting
 
+	"github.com/bethropolis/tide/internal/theme" // Import theme package
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -21,8 +22,12 @@ func New() (*TUI, error) {
 	if err := s.Init(); err != nil {
 		return nil, fmt.Errorf("failed to initialize tcell screen: %w", err)
 	}
-    defStyle := tcell.StyleDefault.Background(tcell.ColorDefault).Foreground(tcell.ColorDefault)
+
+	// Use the theme's default style for the screen background
+	currentTheme := theme.GetCurrentTheme()
+	defStyle := currentTheme.GetStyle("Default")
 	s.SetStyle(defStyle)
+
 	return &TUI{screen: s}, nil
 }
 
@@ -57,4 +62,3 @@ func (t *TUI) Size() (int, int) {
 func (t *TUI) GetScreen() tcell.Screen {
 	return t.screen
 }
-

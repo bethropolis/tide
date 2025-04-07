@@ -17,6 +17,7 @@ import (
 	"github.com/bethropolis/tide/internal/modehandler" // Import new package
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/statusbar"
+	"github.com/bethropolis/tide/internal/theme" // Import the theme package
 	"github.com/bethropolis/tide/internal/tui"
 	"github.com/bethropolis/tide/plugins/wordcount"
 	"github.com/gdamore/tcell/v2"
@@ -34,6 +35,7 @@ type App struct {
 	filePath            string
 	highlighter         *highlighter.Highlighter // Hold highlighter instance
 	highlightingManager *HighlightingManager     // Add HighlightingManager
+	activeTheme         *theme.Theme             // Store reference to the active theme
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -100,6 +102,7 @@ func NewApp(filePath string) (*App, error) {
 		highlighter:   highlighterSvc,
 		quit:          quitChan,
 		redrawRequest: make(chan struct{}, 1),
+		activeTheme:   theme.GetCurrentTheme(), // Use the current theme (defaults to DefaultDark)
 		// Status fields remain for migration
 		statusMessage:     "",
 		statusMessageTime: time.Time{},
@@ -141,7 +144,7 @@ func NewApp(filePath string) (*App, error) {
 
 	// --- Initial Syntax Highlighting (with enhanced logging) ---
 	logger.Debugf("App: Beginning initial syntax highlight process...")
-	lang := appInstance.highlighter.GetLanguage(filePath)
+	lang, queryBytes := appInstance.highlighter.GetLanguage(filePath) // Get both language and query
 	if lang != nil {
 		logger.Debugf("App: Language detected for '%s', proceeding with highlighting", filePath)
 
@@ -153,7 +156,7 @@ func NewApp(filePath string) (*App, error) {
 
 		logger.Debugf("App: Calling highlighter.HighlightBuffer synchronously...")
 		startTime := time.Now()
-		initialHighlights, initialTree, err := appInstance.highlighter.HighlightBuffer(initialCtx, buf, lang, nil)
+		initialHighlights, initialTree, err := appInstance.highlighter.HighlightBuffer(initialCtx, buf, lang, queryBytes, nil)
 		duration := time.Since(startTime)
 
 		if err != nil {
@@ -253,8 +256,9 @@ func (a *App) drawEditor() {
 	width, height := a.tuiManager.Size()
 
 	a.tuiManager.Clear()
-	tui.DrawBuffer(a.tuiManager, a.editor)
-	a.statusBar.Draw(screen, width, height) // status bar draws itself
+	// Pass the theme to DrawBuffer
+	tui.DrawBuffer(a.tuiManager, a.editor, a.activeTheme)
+	a.statusBar.Draw(screen, width, height, a.activeTheme) // Pass theme to status bar
 	tui.DrawCursor(a.tuiManager, a.editor)
 	a.tuiManager.Show()
 }
@@ -340,4 +344,18 @@ func (a *App) requestRedraw() {
 // GetModeHandler allows the API adapter to access the mode handler for command registration.
 func (a *App) GetModeHandler() *modehandler.ModeHandler {
 	return a.modeHandler
+}
+
+// GetTheme returns the app's active theme.
+func (a *App) GetTheme() *theme.Theme {
+	return a.activeTheme
+}
+
+// SetTheme changes the app's active theme and triggers a redraw.
+func (a *App) SetTheme(t *theme.Theme) {
+	if t != nil {
+		a.activeTheme = t
+		theme.SetCurrentTheme(t)
+		a.requestRedraw() // Redraw with new theme
+	}
 }

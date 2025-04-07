@@ -4,6 +4,7 @@ package plugin
 import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/types"
+	"github.com/gdamore/tcell/v2"
 )
 
 // CommandFunc defines the signature for commands registered by plugins.
@@ -16,16 +17,16 @@ type EditorAPI interface {
 	// --- Buffer Access (Read-Only Preferred) ---
 	// GetBufferContent(start, end types.Position) ([]byte, error) // Get specific range
 	GetBufferLines(startLine, endLine int) ([][]byte, error) // Get range of lines
-	GetBufferLine(line int) ([]byte, error)                 // Get single line
-	GetBufferLineCount() int                                // Get line count
-	GetBufferFilePath() string                              // Get current file path
-	IsBufferModified() bool                                 // Check modified status
-	GetBufferBytes() []byte 
+	GetBufferLine(line int) ([]byte, error)                  // Get single line
+	GetBufferLineCount() int                                 // Get line count
+	GetBufferFilePath() string                               // Get current file path
+	IsBufferModified() bool                                  // Check modified status
+	GetBufferBytes() []byte
 
 	// --- Buffer Modification ---
 	// Use with caution! Ensure plugins don't corrupt state.
 	InsertText(pos types.Position, text []byte) error
-	
+
 	DeleteRange(start, end types.Position) error
 	// ReplaceRange(start, end types.Position, text []byte) error // Combine delete/insert
 
@@ -44,6 +45,9 @@ type EditorAPI interface {
 
 	// --- Status Bar ---
 	SetStatusMessage(format string, args ...interface{}) // Show temporary messages
+
+	// --- Theme Access ---
+	GetThemeStyle(styleName string) tcell.Style // Get a style from the active theme
 
 	// --- Configuration (Future) ---
 	// GetConfigValue(key string) (interface{}, error)

@@ -8,6 +8,7 @@ import (
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/types"
+	"github.com/gdamore/tcell/v2"
 	// No longer need direct command types here
 )
 
@@ -119,4 +120,9 @@ func (api *appEditorAPI) RegisterCommand(name string, cmdFunc plugin.CommandFunc
 func (api *appEditorAPI) SetStatusMessage(format string, args ...interface{}) {
 	api.app.statusBar.SetTemporaryMessage(format, args...) // Delegate to status bar
 	api.app.requestRedraw()                                // Ensure redraw to show message
+}
+
+// --- Theme Access ---
+func (api *appEditorAPI) GetThemeStyle(styleName string) tcell.Style {
+	return api.app.activeTheme.GetStyle(styleName)
 }
