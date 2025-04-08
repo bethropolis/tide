@@ -23,16 +23,6 @@ jobs:
     build:
         name: Build Binaries
         runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                go-version: ['>=1.23.7']
-                platform:
-                    - { os: linux, arch: amd64 }
-                    - { os: linux, arch: arm64 }
-                    - { os: windows, arch: amd64 }
-                    - { os: darwin, arch: amd64 }
-                    - { os: darwin, arch: arm64 }
-
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
@@ -40,21 +30,20 @@ jobs:
             - name: Set up Go
               uses: actions/setup-go@v5
               with:
-                    go-version: ${{ matrix.go-version }}
+                    go-version: '>=1.23.7'
 
             - name: Create directories
               run: mkdir -p ./dist/package
               shell: bash
 
-
-            - name: setup xgo
+            - name: Setup xgo
               uses: crazy-max/ghaction-xgo@v3
               with:
                 xgo_version: latest
                 go_version: 1.21
                 dest: dist
                 prefix: tide
-                targets: windows/amd64,linux/amd64,linux/arm64,darwin/arm64
+                targets: windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
                 v: true
                 x: false
                 race: false
@@ -62,51 +51,66 @@ jobs:
                 buildmode: default
                 trimpath: true
 
-            - name: Create Archive
+            - name: Create Archives
               run: |
                 BINARY_NAME="tide"
-                ARCHIVE_BASE_NAME="${BINARY_NAME}-${{ github.ref_name }}-${{ matrix.platform.os }}-${{ matrix.platform.arch }}"
+                REF_NAME="${GITHUB_REF_NAME:-latest}"
                 
-                ls -ah dist/ 
-                
-                # Clear package directory to avoid mixing files from previous matrix runs
-                rm -rf ./dist/package/*
-                
-                # Copy binary and README to package directory
-                if [ "${{ matrix.platform.os }}" = "windows" ]; then
-                    cp "./dist/${BINARY_NAME}.exe" ./dist/package/
-                else
-                    cp "./dist/${BINARY_NAME}" ./dist/package/
-                fi
-                
-                # Copy README to package directory
-                cp README.md ./dist/package/ || echo "Warning: README.md not found"
-                
-                # Create different archive types based on target OS
-                if [ "${{ matrix.platform.os }}" = "windows" ]; then
-                    7z a "./dist/${ARCHIVE_BASE_NAME}.zip" "./dist/package/*"
-                else
-                    tar -czvf "./dist/${ARCHIVE_BASE_NAME}.tar.gz" -C ./dist/package .
-                fi
-                
-                # List files in dist directory for debugging
+                echo "Files in dist directory:"
                 ls -la ./dist/
+                
+                # Process each binary output by xgo
+                for BINARY_PATH in ./dist/tide-*; do
+                  # Extract platform info from filename
+                  FILENAME=$(basename "$BINARY_PATH")
+                  
+                  # Skip if not a file
+                  [ ! -f "$BINARY_PATH" ] && continue
+                  
+                  # Parse OS/ARCH from filename pattern tide-{os}-{arch}[.exe]
+                  if [[ "$FILENAME" == *windows* ]]; then
+                    OS="windows"
+                    ARCH=$(echo "$FILENAME" | sed -E 's/tide-windows-([^.]+)\.exe/\1/')
+                    EXT=".zip"
+                    BINARY_FILE="${BINARY_NAME}.exe"
+                  else
+                    OS=$(echo "$FILENAME" | cut -d'-' -f2)
+                    ARCH=$(echo "$FILENAME" | cut -d'-' -f3)
+                    EXT=".tar.gz"
+                    BINARY_FILE="$BINARY_NAME"
+                  fi
+                  
+                  ARCHIVE_NAME="${BINARY_NAME}-${REF_NAME}-${OS}-${ARCH}${EXT}"
+                  
+                  echo "Processing: $FILENAME for $OS-$ARCH → $ARCHIVE_NAME"
+                  
+                  # Clear and prepare package directory
+                  rm -rf ./dist/package/*
+                  cp "$BINARY_PATH" "./dist/package/$BINARY_FILE"
+                  cp README.md ./dist/package/ || echo "Warning: README.md not found"
+                  
+                  # Create archive based on OS
+                  if [[ "$OS" == "windows" ]]; then
+                    7z a "./dist/$ARCHIVE_NAME" "./dist/package/*"
+                  else
+                    tar -czvf "./dist/$ARCHIVE_NAME" -C ./dist/package .
+                  fi
+                  
+                  # Add to artifacts list
+                  echo "$ARCHIVE_NAME" >> ./dist/artifacts_list.txt
+                done
+                
+                echo "Created archives:"
+                ls -la ./dist/*.zip ./dist/*.tar.gz 2>/dev/null || echo "No archives found"
               shell: bash
 
-            - name: Upload Artifact
-              if: matrix.platform.os != 'windows'
+            - name: Upload Artifacts
               uses: actions/upload-artifact@v4
               with:
-                name: tide-${{ matrix.platform.os }}-${{ matrix.platform.arch }}
-                path: ./dist/*.tar.gz
-                if-no-files-found: warn
-
-            - name: Upload Windows Artifact
-              if: matrix.platform.os == 'windows'
-              uses: actions/upload-artifact@v4
-              with:
-                name: tide-${{ matrix.platform.os }}-${{ matrix.platform.arch }}
-                path: ./dist/*.zip
+                name: tide-binaries
+                path: |
+                  ./dist/*.tar.gz
+                  ./dist/*.zip
                 if-no-files-found: warn
 
     # release:
