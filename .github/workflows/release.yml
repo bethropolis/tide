@@ -46,13 +46,13 @@ jobs:
               run: mkdir -p ./dist/package
               shell: bash
 
-              
+
             - name: setup xgo
               uses: crazy-max/ghaction-xgo@v3
               with:
                 xgo_version: latest
                 go_version: 1.21
-                dest: dist/package
+                dest: dist
                 prefix: tide
                 targets: windows/amd64,linux/amd64,linux/arm64,darwin/arm64
                 v: true
@@ -66,6 +66,8 @@ jobs:
               run: |
                 BINARY_NAME="tide"
                 ARCHIVE_BASE_NAME="${BINARY_NAME}-${{ github.ref_name }}-${{ matrix.platform.os }}-${{ matrix.platform.arch }}"
+                
+                ls -ah dist/ 
                 
                 # Clear package directory to avoid mixing files from previous matrix runs
                 rm -rf ./dist/package/*
