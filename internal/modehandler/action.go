@@ -136,9 +136,9 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 			logger.Debugf("Yank error: %v", err)
 			actionProcessed = false
 		} else if copied {
-			mh.statusBar.SetTemporaryMessage("Selection yanked")
+			mh.statusBar.SetTemporaryMessage("Text copied to clipboard")
 		} else {
-			mh.statusBar.SetTemporaryMessage("Nothing selected to yank")
+			mh.statusBar.SetTemporaryMessage("Nothing selected to copy")
 		}
 
 	case input.ActionPaste:
@@ -148,8 +148,39 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 			logger.Debugf("Paste error: %v", err)
 			actionProcessed = false
 		} else if !pasted {
-			mh.statusBar.SetTemporaryMessage("Clipboard empty")
+			mh.statusBar.SetTemporaryMessage("Clipboard empty - nothing to paste")
 			actionProcessed = false
+		} else {
+			mh.statusBar.SetTemporaryMessage("Text pasted from clipboard")
+		}
+
+	// Undo/Redo actions
+	case input.ActionUndo:
+		undone, err := mh.editor.Undo()
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Undo failed: %v", err)
+			logger.Debugf("Undo error: %v", err)
+			actionProcessed = false
+		} else if !undone {
+			mh.statusBar.SetTemporaryMessage("Nothing to undo")
+			actionProcessed = false
+		} else {
+			mh.statusBar.SetTemporaryMessage("Undo completed")
+			// Event already dispatched by Undo method
+		}
+
+	case input.ActionRedo:
+		redone, err := mh.editor.Redo()
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Redo failed: %v", err)
+			logger.Debugf("Redo error: %v", err)
+			actionProcessed = false
+		} else if !redone {
+			mh.statusBar.SetTemporaryMessage("Nothing to redo")
+			actionProcessed = false
+		} else {
+			mh.statusBar.SetTemporaryMessage("Redo completed")
+			// Event already dispatched by Redo method
 		}
 
 	// Text Modification actions

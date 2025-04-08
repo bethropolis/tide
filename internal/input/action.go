@@ -30,6 +30,8 @@ const (
 	ActionDeleteCharBackward // Backspace key
 	ActionYank               // Copy selection to clipboard
 	ActionPaste              // Insert clipboard content
+	ActionUndo               // Undo last edit
+	ActionRedo               // Redo previously undone edit
 	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward
 
 	// --- Editor Mode ---
@@ -38,7 +40,6 @@ const (
 	ActionCancelCommand     // Special action for Esc in Command Mode
 	ActionAppendCommand     // Special action for runes in Command Mode
 	ActionDeleteCommandChar // Special action for Backspace in Command Mode
-
 
 	// --- find ---
 	ActionEnterFindMode // Trigger find mode (e.g., '/')

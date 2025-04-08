@@ -69,8 +69,17 @@ func (p *InputProcessor) loadDefaultBindings() {
 	ctrlMap[tcell.KeyCtrlS] = ActionSave
 	// Add more Ctrl bindings here, e.g., Ctrl+Q for ForceQuit?
 	ctrlMap[tcell.KeyCtrlQ] = ActionForceQuit // Example force quit
-	ctrlMap[tcell.KeyCtrlY] = ActionYank      // Add Yank binding
-	ctrlMap[tcell.KeyCtrlP] = ActionPaste     // Add Paste binding
+
+	// Add Undo binding (Ctrl+Z)
+	ctrlMap[tcell.KeyCtrlZ] = ActionUndo
+
+	// Add Redo bindings (Ctrl+Y and Ctrl+R, both common across editors)
+	ctrlMap[tcell.KeyCtrlY] = ActionRedo
+	ctrlMap[tcell.KeyCtrlR] = ActionRedo
+
+	// Add clipboard operations
+	ctrlMap[tcell.KeyCtrlX] = ActionYank  // Ctrl+X for copy (yank)
+	ctrlMap[tcell.KeyCtrlV] = ActionPaste // Ctrl+V for paste
 
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
@@ -82,6 +91,10 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.leaderMap['N'] = ActionFindPrevious     // <leader>N
 	p.leaderMap['w'] = ActionSave             // <leader>w (example alias for save)
 	p.leaderMap['q'] = ActionQuit             // <leader>q (example alias for quit)
+	p.leaderMap['u'] = ActionUndo             // <leader>u (alternative for undo)
+	p.leaderMap['r'] = ActionRedo             // <leader>r (alternative for redo)
+	p.leaderMap['y'] = ActionYank             // <leader>y for yank (copy)
+	p.leaderMap['p'] = ActionPaste            // <leader>p for paste
 
 	// Note: We no longer map these directly in runeKeymap,
 	// they'll default to ActionInsertRune unless preceded by leader
