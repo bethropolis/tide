@@ -46,32 +46,21 @@ jobs:
               run: mkdir -p ./dist/package
               shell: bash
 
-            - name: Install dependencies
-              run: |
-                sudo apt-get update
-                sudo apt-get install -y gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu
-              if: matrix.platform.os == 'linux'
-
-            - name: Build
-              env:
-                GOARCH: ${{ matrix.platform.arch }}
-                GOOS: ${{ matrix.platform.os }}
-                CGO_ENABLED: 1  
-              run: |
-                BINARY_NAME="tide"
-                OUTPUT_NAME="${BINARY_NAME}"
-                
-                # Add exe extension for Windows
-                if [ "${{ matrix.platform.os }}" = "windows" ]; then
-                    OUTPUT_NAME="${OUTPUT_NAME}.exe"
-                fi
-                
-                # Build with optimization flags
-                CC=${GOOS}-${GOARCH}-gcc go build -trimpath -ldflags="-s -w" -o "./dist/${OUTPUT_NAME}" ./cmd/tide/
-                
-                # List the build directory
-                ls -la ./dist/
-              shell: bash
+              
+            - name: setup xgo
+              uses: crazy-max/ghaction-xgo@v3
+              with:
+                xgo_version: latest
+                go_version: 1.21
+                dest: dist/package
+                prefix: tide
+                targets: windows/amd64,linux/amd64,linux/arm64,darwin/arm64
+                v: true
+                x: false
+                race: false
+                ldflags: -s -w
+                buildmode: default
+                trimpath: true
 
             - name: Create Archive
               run: |
