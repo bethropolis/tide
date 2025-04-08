@@ -4,6 +4,7 @@ package app
 import (
 	"fmt" // Keep
 	// Keep for now
+	"github.com/bethropolis/tide/internal/commands"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
@@ -17,6 +18,9 @@ var _ plugin.EditorAPI = (*appEditorAPI)(nil)
 
 // Verify that appEditorAPI implements the theme.ThemeAPI interface
 var _ theme.ThemeAPI = (*appEditorAPI)(nil)
+
+// Add verification for commands.ThemeAPI interface
+var _ commands.ThemeAPI = (*appEditorAPI)(nil)
 
 // appEditorAPI provides the concrete implementation of the EditorAPI interface.
 type appEditorAPI struct {

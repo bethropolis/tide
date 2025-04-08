@@ -6,18 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time" // Still needed temporarily
+	"time"
 
 	"github.com/bethropolis/tide/internal/buffer"
+	"github.com/bethropolis/tide/internal/commands"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
-	"github.com/bethropolis/tide/internal/highlighter" // Import highlighter
+	"github.com/bethropolis/tide/internal/highlight"
+	"github.com/bethropolis/tide/internal/highlighter"
 	"github.com/bethropolis/tide/internal/input"
 	"github.com/bethropolis/tide/internal/logger"
-	"github.com/bethropolis/tide/internal/modehandler" // Import new package
+	"github.com/bethropolis/tide/internal/modehandler"
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/statusbar"
-	"github.com/bethropolis/tide/internal/theme" // Import the theme package
+	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/tui"
 	"github.com/bethropolis/tide/plugins/wordcount"
 	"github.com/gdamore/tcell/v2"
@@ -30,19 +32,19 @@ type App struct {
 	statusBar           *statusbar.StatusBar
 	eventManager        *event.Manager
 	pluginManager       *plugin.Manager
-	modeHandler         *modehandler.ModeHandler // Add ModeHandler
+	modeHandler         *modehandler.ModeHandler
 	editorAPI           plugin.EditorAPI
 	filePath            string
-	highlighter         *highlighter.Highlighter // Hold highlighter instance
-	highlightingManager *HighlightingManager     // Add HighlightingManager
-	activeTheme         *theme.Theme             // Store reference to the active theme
-	themeManager        *theme.Manager           // Add theme manager
+	highlighter         *highlighter.Highlighter
+	highlightingManager *highlight.Manager
+	activeTheme         *theme.Theme
+	themeManager        *theme.Manager
 
 	// Channels managed by the App
 	quit          chan struct{}
 	redrawRequest chan struct{}
 
-	// Status Bar State - keeping these temporarily for migration
+	// Status Bar State - kept temporarily for migration
 	statusMessage     string
 	statusMessageTime time.Time
 }
@@ -97,26 +99,24 @@ func NewApp(filePath string) (*App, error) {
 
 	// --- Create App Instance ---
 	appInstance := &App{
-		tuiManager:          tuiManager,
-		editor:              editor,
-		statusBar:           statusBar,
-		eventManager:        eventManager,
-		pluginManager:       pluginManager,
-		modeHandler:         modeHandler,
-		filePath:            filePath,
-		highlighter:         highlighterSvc,
-		highlightingManager: nil,          // Will be set below
-		themeManager:        themeManager, // Add theme manager
-		activeTheme:         activeTheme,  // Get from manager
-		quit:                quitChan,
-		redrawRequest:       make(chan struct{}, 1),
-		// Status fields remain for migration
+		tuiManager:        tuiManager,
+		editor:            editor,
+		statusBar:         statusBar,
+		eventManager:      eventManager,
+		pluginManager:     pluginManager,
+		modeHandler:       modeHandler,
+		filePath:          filePath,
+		highlighter:       highlighterSvc,
+		themeManager:      themeManager,
+		activeTheme:       activeTheme,
+		quit:              quitChan,
+		redrawRequest:     make(chan struct{}, 1),
 		statusMessage:     "",
 		statusMessageTime: time.Time{},
 	}
 
 	// --- Create Highlighting Manager ---
-	appInstance.highlightingManager = NewHighlightingManager(
+	appInstance.highlightingManager = highlight.NewManager(
 		editor,
 		highlighterSvc,
 		appInstance.requestRedraw,
@@ -126,7 +126,8 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.editorAPI = newEditorAPI(appInstance)
 
 	// Register Built-in App Commands (like :theme)
-	registerAppCommands(appInstance)
+	// Fix: Use commands.ThemeAPI to avoid import cycles
+	commands.RegisterAppCommands(appInstance.editorAPI, appInstance.editorAPI.(commands.ThemeAPI))
 
 	// --- Register Built-in Plugins ---
 	wcPlugin := wordcount.New()
@@ -151,15 +152,13 @@ func NewApp(filePath string) (*App, error) {
 	width, height := tuiManager.Size()
 	editor.SetViewSize(width, height)
 
-	// --- Initial Syntax Highlighting (with enhanced logging) ---
+	// --- Initial Syntax Highlighting ---
 	logger.Debugf("App: Beginning initial syntax highlight process...")
-	lang, queryBytes := appInstance.highlighter.GetLanguage(filePath) // Get both language and query
+	lang, queryBytes := appInstance.highlighter.GetLanguage(filePath)
 	if lang != nil {
 		logger.Debugf("App: Language detected for '%s', proceeding with highlighting", filePath)
 
-		// Use context.Background() for initial sync parse
 		initialCtx := context.Background()
-		logger.Debugf("App: Getting buffer content for initial highlight...")
 		bufContent := buf.Bytes()
 		logger.Debugf("App: Buffer size for highlighting: %d bytes", len(bufContent))
 
@@ -176,7 +175,7 @@ func NewApp(filePath string) (*App, error) {
 			for lineNum, ranges := range initialHighlights {
 				lineCount++
 				highlightCount += len(ranges)
-				if lineCount <= 3 { // Log first few lines as samples
+				if lineCount <= 3 {
 					logger.Debugf("App: Line %d has %d highlight ranges", lineNum, len(ranges))
 				}
 			}
@@ -190,7 +189,7 @@ func NewApp(filePath string) (*App, error) {
 		}
 	} else {
 		logger.Debugf("App: No language detected for initial highlight of '%s'", filePath)
-		editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil) // Ensure cleared state
+		editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil)
 	}
 
 	return appInstance, nil
@@ -211,7 +210,7 @@ func (a *App) Run() error {
 	// --- Main Drawing Loop ---
 	for {
 		select {
-		case <-a.quit: // Wait for quit signal from ModeHandler
+		case <-a.quit:
 			a.eventManager.Dispatch(event.TypeAppQuit, event.AppQuitData{})
 			if a.editor.GetBuffer().IsModified() {
 				log.Println("Warning: Exited with unsaved changes.")
@@ -244,113 +243,11 @@ func (a *App) eventLoop() {
 		case *tcell.EventKey:
 			// Delegate ALL key handling to ModeHandler
 			needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
-
-			// case *tcell.EventMouse: ...
 		}
 
 		if needsRedraw {
 			a.requestRedraw()
 		}
-	}
-}
-
-// --- Drawing ---
-
-// drawEditor clears screen and redraws all components.
-func (a *App) drawEditor() {
-	// Update status bar content (might involve modehandler state)
-	a.updateStatusBarContent()
-
-	// Get the current theme from the manager
-	currentTheme := a.themeManager.Current()
-	a.activeTheme = currentTheme // Update activeTheme reference
-
-	screen := a.tuiManager.GetScreen()
-	width, height := a.tuiManager.Size()
-
-	a.tuiManager.Clear()
-	// Pass the theme to DrawBuffer
-	tui.DrawBuffer(a.tuiManager, a.editor, a.activeTheme)
-	a.statusBar.Draw(screen, width, height, a.activeTheme) // Pass theme to status bar
-	tui.DrawCursor(a.tuiManager, a.editor)
-	a.tuiManager.Show()
-}
-
-// updateStatusBarContent pushes current editor state to the status bar component.
-func (a *App) updateStatusBarContent() {
-	buffer := a.editor.GetBuffer()
-	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
-	a.statusBar.SetCursorInfo(a.editor.GetCursor())
-	a.statusBar.SetEditorMode(a.modeHandler.GetCurrentModeString())
-
-	// If in command mode, ensure the command buffer is displayed via status bar's temp message
-	if a.modeHandler.GetCurrentMode() == modehandler.ModeCommand {
-		a.statusBar.SetTemporaryMessage(":%s", a.modeHandler.GetCommandBuffer())
-	} else if a.modeHandler.GetCurrentMode() == modehandler.ModeFind {
-		// Update status bar with find buffer in find mode
-		a.statusBar.SetTemporaryMessage("/%s", a.modeHandler.GetFindBuffer())
-	}
-
-	// If we have an active status message, transfer it to the status bar
-	// This code will help during transition
-	if !a.statusMessageTime.IsZero() && time.Since(a.statusMessageTime) <= 4*time.Second {
-		a.statusBar.SetTemporaryMessage(a.statusMessage)
-	}
-}
-
-// --- Event Handlers (App reacts to events) ---
-func (a *App) handleCursorMovedForStatus(e event.Event) bool {
-	if data, ok := e.Data.(event.CursorMovedData); ok {
-		a.statusBar.SetCursorInfo(data.NewPosition)
-	}
-	return false
-}
-
-func (a *App) handleBufferModifiedForStatus(e event.Event) bool {
-	a.updateStatusBarContent()
-	return false
-}
-
-func (a *App) handleBufferSavedForStatus(e event.Event) bool {
-	a.updateStatusBarContent()
-	return false
-}
-
-func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
-	a.updateStatusBarContent()
-	a.editor.TriggerSyntaxHighlight() // Re-highlight on load
-	a.requestRedraw()                 // Request redraw after potential highlight changes
-	return false
-}
-
-// handleBufferModifiedForHighlighting processes buffer modification events
-func (a *App) handleBufferModifiedForHighlighting(e event.Event) bool {
-	if data, ok := e.Data.(event.BufferModifiedData); ok {
-		// Buffer was modified, accumulate the edit info
-		logger.Debugf("App: Buffer modified event received, accumulating edit info.")
-		a.highlightingManager.AccumulateEdit(data.Edit)
-	} else {
-		logger.Warnf("App: Received BufferModified event with unexpected data type: %T", e.Data)
-		// Fall back to old method if edit info isn't available
-		logger.Debugf("App: Falling back to non-incremental highlighting due to missing edit info")
-	}
-	return false // Allow other handlers for BufferModified to run
-}
-
-// SetStatusMessage updates the status message.
-// Keeping temporarily for backward compatibility during transition
-func (a *App) SetStatusMessage(format string, args ...interface{}) {
-	a.statusMessage = fmt.Sprintf(format, args...)
-	a.statusMessageTime = time.Now()
-	// Forward to the new status bar
-	a.statusBar.SetTemporaryMessage(a.statusMessage)
-}
-
-// requestRedraw sends a redraw signal non-blockingly.
-func (a *App) requestRedraw() {
-	select {
-	case a.redrawRequest <- struct{}{}:
-	default: // Don't block if a redraw is already pending
 	}
 }
 
@@ -378,10 +275,8 @@ func (a *App) SetTheme(t *theme.Theme) {
 		a.activeTheme = t
 
 		// Update the theme manager's active theme
-		// This also updates the global CurrentTheme reference
 		if err := a.themeManager.SetTheme(t.Name); err != nil {
 			logger.Warnf("Failed to set theme in manager: %v", err)
-			// Continue anyway since we've set it in the app
 		}
 
 		logger.Debugf("App: Theme changed from '%s' to '%s', requesting redraw",
