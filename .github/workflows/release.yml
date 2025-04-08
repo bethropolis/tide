@@ -3,8 +3,8 @@ name: Release Go Binaries
 # Trigger workflow on tag push or manual dispatch
 on:
     push:
-        # tags:
-        #     - 'v*'
+        tags:
+            - 'v*'
     workflow_dispatch:
         inputs:
             tag_name:
@@ -127,6 +127,7 @@ jobs:
     #         - name: Download Artifacts
     #           uses: actions/download-artifact@v4
     #           with:
+    #             name: tide-binaries
     #             path: ./artifacts
 
     #         - name: Process Artifacts for Release
