@@ -87,9 +87,9 @@ func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
 
 	foundPos, found := findManager.FindNext(forward)
 	if found {
-		mh.editor.SetCursor(foundPos) // Move cursor to start of match
-		mh.editor.ScrollToCursor()    // Ensure cursor is visible
-		mh.lastMatchPos = &foundPos   // Store found position
+		mh.editor.SetCursor(foundPos)  // Move cursor to start of match
+		mh.editor.ScrollToCursor()     // Ensure cursor is visible
+		mh.lastMatchPos = &foundPos    // Store found position
 		mh.lastSearchForward = forward // Remember direction for next 'n'/'N'
 		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm)
 		logger.Debugf("ModeHandler: Found '%s' at %v", mh.lastSearchTerm, foundPos)
