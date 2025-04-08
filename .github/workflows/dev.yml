@@ -5,8 +5,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       tag_name:
@@ -115,71 +113,3 @@ jobs:
                   ./dist/*.zip
                 if-no-files-found: warn
 
-    # release:
-    #     name: Create Release
-    #     needs: build  # Wait for build job to complete
-    #     runs-on: ubuntu-latest
-    #     permissions:
-    #         contents: write  # Required for release creation
-
-    #     steps:
-    #         - name: Checkout code
-    #           uses: actions/checkout@v4
-                
-    #         - name: Download Artifacts
-    #           uses: actions/download-artifact@v4
-    #           with:
-    #             name: tide-binaries
-    #             path: ./artifacts
-
-    #         - name: Process Artifacts for Release
-    #           run: |
-    #             # First look at the directory structure
-    #             echo "Initial directory structure:"
-    #             find ./artifacts -type f | sort
-                
-    #             # Create a directory for processed files
-    #             mkdir -p ./release-files
-                
-    #             # Find and move all artifact files to the release directory
-    #             find ./artifacts -type f -name "*.tar.gz" -o -name "*.zip" | while read file; do
-    #                 cp "$file" ./release-files/
-    #             done
-                
-    #             # Generate checksums for the files in release directory
-    #             cd ./release-files
-    #             echo "Files to be released:"
-    #             ls -la
-                
-    #             # Generate SHA256 checksums for all artifacts
-    #             sha256sum * > checksums.txt
-    #             cat checksums.txt
-    #           shell: bash
-
-    #         - name: Set release info
-    #           id: release_info
-    #           run: |
-    #             # Set tag name - use input value if manually triggered, otherwise use git ref
-    #             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-    #                 echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-    #                 echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_OUTPUT
-    #                 echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
-    #             else
-    #                 echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-    #                 echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-    #                 echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
-    #             fi
-    #           shell: bash
-
-    #         - name: Create GitHub Release
-    #           uses: softprops/action-gh-release@v2
-    #           with:
-    #             name: ${{ steps.release_info.outputs.RELEASE_NAME }}
-    #             tag_name: ${{ steps.release_info.outputs.TAG_NAME }}
-    #             generate_release_notes: true
-    #             make_latest: true
-    #             prerelease: ${{ steps.release_info.outputs.IS_PRERELEASE }}
-    #             files: |
-    #                 ./release-files/*
-    #           env:
-    #             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
