@@ -85,6 +85,12 @@ func (api *appEditorAPI) DeleteRange(start, end types.Position) error {
 	return err
 }
 
+// Replace implements the Replace method for substitution command
+func (api *appEditorAPI) Replace(pattern, replacement string, global bool) (int, error) {
+	// Delegate to editor's Replace method which delegates to findManager.Replace
+	return api.app.editor.Replace(pattern, replacement, global)
+}
+
 // --- Cursor & Viewport ---
 
 func (api *appEditorAPI) GetCursor() types.Position {
@@ -170,4 +176,27 @@ func (api *appEditorAPI) GetTheme() *theme.Theme {
 // ListThemes returns a list of all available theme names
 func (api *appEditorAPI) ListThemes() []string {
 	return api.app.GetThemeManager().ListThemes()
+}
+
+// SaveBuffer saves the current buffer to disk
+func (api *appEditorAPI) SaveBuffer() error {
+	return api.app.editor.SaveBuffer()
+}
+
+// RequestQuit signals the application to quit
+func (api *appEditorAPI) RequestQuit(force bool) {
+	if force {
+		logger.Debugf("API: Force quit requested.")
+		close(api.app.quit) // Close directly if forced
+	} else {
+		// Check modified status via buffer
+		if api.app.editor.GetBuffer().IsModified() {
+			logger.Debugf("API: Quit requested, but buffer modified. Setting status.")
+			api.SetStatusMessage("No write since last change (use :q! or force quit key)")
+			// Don't close the channel here. Let the command fail.
+		} else {
+			logger.Debugf("API: Quit requested (buffer not modified).")
+			close(api.app.quit)
+		}
+	}
 }

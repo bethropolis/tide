@@ -5,104 +5,98 @@ import (
 	"github.com/bethropolis/tide/internal/types"
 )
 
-// Manager handles text selection operations
+// Manager handles text selection state and logic.
 type Manager struct {
-	editor         EditorInterface
+	editor EditorInterface // Interface to get cursor position
+
+	// --- State owned by Selection Manager ---
 	selecting      bool
-	selectionStart types.Position
-	selectionEnd   types.Position
+	selectionStart types.Position // Anchor point
+	selectionEnd   types.Position // Usually follows cursor
 }
 
-// EditorInterface defines what the selection manager needs from editor
+// EditorInterface defines what the selection manager needs from editor.
 type EditorInterface interface {
-	GetCursor() types.Position
+	GetCursor() types.Position // Need current cursor pos
 }
 
-// NewManager creates a new selection manager
+// NewManager creates a new selection manager.
 func NewManager(editor EditorInterface) *Manager {
 	return &Manager{
 		editor:         editor,
 		selecting:      false,
-		selectionStart: types.Position{Line: -1, Col: -1},
+		selectionStart: types.Position{Line: -1, Col: -1}, // Invalid start means no selection
 		selectionEnd:   types.Position{Line: -1, Col: -1},
 	}
 }
 
-// HasSelection returns whether there is an active selection
+// HasSelection returns whether there is an active selection.
 func (m *Manager) HasSelection() bool {
+	// A selection is active if 'selecting' is true AND start/end differ.
 	return m.selecting && !positionsEqual(m.selectionStart, m.selectionEnd)
 }
 
-// positionsEqual checks if two positions are equal
+// positionsEqual checks if two positions are equal.
 func positionsEqual(p1, p2 types.Position) bool {
 	return p1.Line == p2.Line && p1.Col == p2.Col
 }
 
-// GetSelection returns the normalized selection range
+// GetSelection returns the normalized selection range (start <= end).
 func (m *Manager) GetSelection() (start types.Position, end types.Position, ok bool) {
-	if !m.HasSelection() {
+	if !m.selecting { // Check 'selecting' flag first
 		return types.Position{Line: -1, Col: -1}, types.Position{Line: -1, Col: -1}, false
 	}
 
 	start = m.selectionStart
 	end = m.selectionEnd
 
-	// Normalize to ensure start <= end
+	// Handle case where selection hasn't moved yet (start==end)
+	if positionsEqual(start, end) {
+		return start, end, false // Valid anchor, but no range selected yet
+	}
+
+	// Normalize: Ensure start is lexicographically before or equal to end
 	if start.Line > end.Line || (start.Line == end.Line && start.Col > end.Col) {
-		start, end = end, start
+		start, end = end, start // Swap
 	}
-	return start, end, true
+	return start, end, true // ok is true only if selecting and start != end
 }
 
-// ClearSelection resets the selection state
+// ClearSelection resets the selection state.
 func (m *Manager) ClearSelection() {
-	if m.selecting {
-		m.selecting = false
-		m.selectionStart = types.Position{Line: -1, Col: -1}
-		m.selectionEnd = types.Position{Line: -1, Col: -1}
-		logger.Debugf("Selection: Cleared")
+	if m.selecting { // Only log if selection was actually active
+		logger.Debugf("Selection Manager: Cleared")
 	}
+	m.selecting = false
+	m.selectionStart = types.Position{Line: -1, Col: -1}
+	m.selectionEnd = types.Position{Line: -1, Col: -1}
 }
 
-// StartOrUpdateSelection manages selection state
+// StartOrUpdateSelection is called when selection should start or extend (e.g., Shift+Move).
 func (m *Manager) StartOrUpdateSelection() {
-	currentCursor := m.editor.GetCursor()
+	currentCursor := m.editor.GetCursor() // Get current cursor position
 
 	if !m.selecting {
+		// If not currently selecting, start a new selection anchored here
 		m.selectionStart = currentCursor
 		m.selecting = true
-		logger.Debugf("Selection: Started at %v", m.selectionStart)
+		logger.Debugf("Selection Manager: Started at %v", m.selectionStart)
 	}
+	// Always update the end position to follow the cursor during selection movement
 	m.selectionEnd = currentCursor
 }
 
-// UpdateSelectionEnd updates just the end position
+// UpdateSelectionEnd updates just the end position of the selection
+// to match the current cursor position.
 func (m *Manager) UpdateSelectionEnd() {
 	if m.selecting {
-		m.selectionEnd = m.editor.GetCursor()
+		currentCursor := m.editor.GetCursor()
+		m.selectionEnd = currentCursor
+		logger.Debugf("Selection Manager: Updated end to %v", m.selectionEnd)
 	}
 }
 
-// IsPositionInSelection checks if a position is within the current selection
-func (m *Manager) IsPositionInSelection(pos types.Position) bool {
-	if !m.HasSelection() {
-		return false
-	}
-
-	start, end, _ := m.GetSelection()
-
-	// Check if position is within range
-	if pos.Line < start.Line || pos.Line > end.Line {
-		return false
-	}
-
-	if pos.Line == start.Line && pos.Col < start.Col {
-		return false
-	}
-
-	if pos.Line == end.Line && pos.Col >= end.Col {
-		return false
-	}
-
-	return true
+// IsSelecting returns the raw selecting flag state.
+func (m *Manager) IsSelecting() bool {
+	return m.selecting
 }

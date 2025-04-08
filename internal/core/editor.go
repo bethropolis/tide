@@ -9,6 +9,7 @@ import (
 	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core/clipboard"
 	"github.com/bethropolis/tide/internal/core/cursor" // Add history import
+	"github.com/bethropolis/tide/internal/core/find"
 	"github.com/bethropolis/tide/internal/core/history"
 	"github.com/bethropolis/tide/internal/core/selection"
 	"github.com/bethropolis/tide/internal/core/text"
@@ -22,24 +23,12 @@ import (
 // Editor coordinates all editing operations
 type Editor struct {
 	buffer     buffer.Buffer
-	Cursor     types.Position
 	viewWidth  int // Cached terminal width
 	viewHeight int // Cached terminal height (excluding status bar)
 	ScrollOff  int // Number of lines to keep visible above/below cursor
 
-	// Selection State
-	selecting      bool           // True if selection is active
-	selectionStart types.Position // Anchor point of the selection
-	selectionEnd   types.Position // Other end of the selection (usually Cursor position)
-
-	// Clipboard State
-	clipboard []byte // Internal register for yank/put
-
 	// Event Manager
 	eventManager *event.Manager // Added for dispatching events on delete etc.
-
-	// Find State
-	searchHighlights []types.HighlightRegion // Store regions to highlight (renamed from 'highlights')
 
 	// Syntax Highlighting State
 	highlighter      *hl.Highlighter    // Highlighter service instance
@@ -53,19 +42,14 @@ type Editor struct {
 	selectionManager *selection.Manager
 	textOps          *text.Operations
 	historyManager   *history.Manager // Add history manager
+	findManager      *find.Manager    // Add find manager field
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
 func NewEditor(buf buffer.Buffer) *Editor {
 	e := &Editor{
 		buffer:           buf,
-		Cursor:           types.Position{Line: 0, Col: 0},
 		ScrollOff:        config.DefaultScrollOff,
-		selecting:        false,
-		selectionStart:   types.Position{Line: -1, Col: -1},
-		selectionEnd:     types.Position{Line: -1, Col: -1},
-		clipboard:        nil,
-		searchHighlights: make([]types.HighlightRegion, 0),
 		syntaxHighlights: make(hl.HighlightResult),
 		syntaxTree:       nil,
 		highlightMutex:   sync.RWMutex{},
@@ -77,6 +61,7 @@ func NewEditor(buf buffer.Buffer) *Editor {
 	e.selectionManager = selection.NewManager(e)
 	e.clipboardManager = clipboard.NewManager(e)
 	e.historyManager = history.NewManager(e, history.DefaultMaxHistory) // Initialize history manager
+	e.findManager = find.NewManager(e)                                  // Initialize find manager
 
 	logger.Debugf("Editor created and managers initialized.")
 	return e
@@ -99,9 +84,11 @@ func (e *Editor) GetBuffer() buffer.Buffer {
 
 // GetCursor returns the current cursor position.
 func (e *Editor) GetCursor() types.Position {
-	// For now, we return the Editor's own cursor field
-	// Eventually, this could delegate to cursorManager.GetPosition()
-	return e.Cursor
+	if e.cursorManager == nil {
+		logger.Warnf("Editor.GetCursor called before cursorManager initialized")
+		return types.Position{Line: 0, Col: 0} // Fallback
+	}
+	return e.cursorManager.GetPosition()
 }
 
 // GetViewport returns the viewport position by delegating to the cursor manager
@@ -127,70 +114,58 @@ func (e *Editor) GetEventManager() *event.Manager {
 
 // GetSelecting returns whether selection is active
 func (e *Editor) GetSelecting() bool {
-	return e.selecting
+	if e.selectionManager == nil {
+		logger.Warnf("Editor.GetSelecting called before selectionManager initialized")
+		return false
+	}
+	return e.selectionManager.IsSelecting()
 }
 
 // HasSelection returns whether there's an active selection
 func (e *Editor) HasSelection() bool {
-	return e.selecting && (e.selectionStart != e.selectionEnd)
+	if e.selectionManager == nil {
+		logger.Warnf("Editor.HasSelection called before selectionManager initialized")
+		return false
+	}
+	return e.selectionManager.HasSelection()
 }
 
 // GetSelection returns the normalized selection range (start <= end).
 // Returns two invalid positions and false if no selection is active.
 func (e *Editor) GetSelection() (start types.Position, end types.Position, ok bool) {
-	if !e.HasSelection() {
+	if e.selectionManager == nil {
+		logger.Warnf("Editor.GetSelection called before selectionManager initialized")
 		return types.Position{Line: -1, Col: -1}, types.Position{Line: -1, Col: -1}, false
 	}
-
-	start = e.selectionStart
-	end = e.selectionEnd
-
-	// Normalize: Ensure start is lexicographically before or equal to end
-	if start.Line > end.Line || (start.Line == end.Line && start.Col > end.Col) {
-		start, end = end, start // Swap
-	}
-	return start, end, true
+	return e.selectionManager.GetSelection()
 }
 
 // ClearSelection resets the selection state.
 func (e *Editor) ClearSelection() {
-	if e.selecting {
-		e.selecting = false
-		// Optionally reset positions, or keep them for potential re-activation? Reset for now.
-		e.selectionStart = types.Position{Line: -1, Col: -1}
-		e.selectionEnd = types.Position{Line: -1, Col: -1}
-		logger.Debugf("Editor: Selection cleared") // Debug log
+	if e.selectionManager == nil {
+		logger.Warnf("Editor.ClearSelection called before selectionManager initialized")
+		return
 	}
+	e.selectionManager.ClearSelection()
 }
 
 // StartOrUpdateSelection manages selection state during movement.
 // Called typically when a Shift + movement key is pressed.
 func (e *Editor) StartOrUpdateSelection() {
-	if !e.selecting {
-		// Start a new selection - anchor at the *current* cursor position *before* movement
-		e.selectionStart = e.Cursor
-		e.selecting = true
-		logger.Debugf("Editor: Selection started at %v", e.selectionStart) // Debug log
+	if e.selectionManager == nil {
+		logger.Warnf("Editor.StartOrUpdateSelection called before selectionManager initialized")
+		return
 	}
-	// The *other* end of the selection always follows the cursor during selection movement
-	e.selectionEnd = e.Cursor // Update end to current cursor position
+	e.selectionManager.StartOrUpdateSelection()
 }
 
 // SetCursor sets the cursor position
 func (e *Editor) SetCursor(pos types.Position) {
-	e.Cursor = pos // Update the editor's internal cursor state
-
-	// Update the cursor manager with the new position
-	if e.cursorManager != nil {
-		e.cursorManager.SetPosition(pos) // This will handle clamping and scrolling
-		// Sync back the possibly clamped position
-		e.Cursor = e.cursorManager.GetPosition()
+	if e.cursorManager == nil {
+		logger.Warnf("Editor.SetCursor called before cursorManager initialized")
+		return
 	}
-
-	// Update selection end if we're selecting
-	if e.selecting {
-		e.selectionEnd = e.Cursor
-	}
+	e.cursorManager.SetPosition(pos)
 }
 
 // ScrollToCursor ensures cursor remains visible
@@ -201,18 +176,27 @@ func (e *Editor) ScrollToCursor() {
 }
 
 func (e *Editor) HasHighlights() bool {
-	return len(e.searchHighlights) > 0
+	if e.findManager == nil {
+		logger.Warnf("Editor.HasHighlights called before findManager initialized")
+		return false
+	}
+	return e.findManager.HasHighlights()
 }
 
 func (e *Editor) ClearHighlights() {
-	if len(e.searchHighlights) > 0 {
-		logger.Debugf("Editor: Clearing %d highlights", len(e.searchHighlights))
-		e.searchHighlights = e.searchHighlights[:0]
+	if e.findManager == nil {
+		logger.Warnf("Editor.ClearHighlights called before findManager initialized")
+		return
 	}
+	e.findManager.ClearHighlights()
 }
 
 func (e *Editor) GetHighlights() []types.HighlightRegion {
-	return e.searchHighlights
+	if e.findManager == nil {
+		logger.Warnf("Editor.GetHighlights called before findManager initialized")
+		return nil
+	}
+	return e.findManager.GetHighlights()
 }
 
 // UpdateSyntaxHighlights updates the highlighting
@@ -294,4 +278,17 @@ func (e *Editor) ClearHistory() {
 		return
 	}
 	e.historyManager.Clear()
+}
+
+// GetCurrentSearchHighlights delegates to findManager
+func (e *Editor) GetCurrentSearchHighlights() []types.HighlightRegion {
+	if e.findManager == nil {
+		return nil
+	}
+	return e.findManager.GetHighlights()
+}
+
+// GetFindManager provides direct access to the find manager
+func (e *Editor) GetFindManager() *find.Manager {
+	return e.findManager
 }

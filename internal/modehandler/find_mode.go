@@ -62,43 +62,38 @@ func (mh *ModeHandler) cancelFindMode() {
 	logger.Debugf("ModeHandler: Canceled Find Mode")
 }
 
-// executeFind performs the search and updates editor state.
-// isSubsequent indicates if this is an n/N navigation after initial search.
+// executeFind performs the search using the findManager.
 func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
 	if mh.lastSearchTerm == "" {
 		mh.statusBar.SetTemporaryMessage("No search term")
 		return
 	}
 
-	// Start search from current cursor pos + direction offset
-	startPos := mh.editor.GetCursor()
-
-	if isSubsequent && mh.lastMatchPos != nil {
-		// For n/N, start from last match position
-		startPos = *mh.lastMatchPos
-		// Offset depends on direction to avoid finding the same match repeatedly
-		if forward {
-			startPos.Col++ // Move one column past start of last match for forward search
+	// For initial search (not n/N), highlight all matches first
+	if !isSubsequent {
+		err := mh.editor.HighlightMatches(mh.lastSearchTerm)
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Invalid pattern: %s", err)
+			return
 		}
-		// For backward search, the editor.Find will handle starting before startPos
-	} else if !isSubsequent {
-		// For initial search (Enter key), start from current cursor position
-		// and clear the last match position
-		mh.lastMatchPos = nil
 	}
 
-	foundPos, found := mh.editor.Find(mh.lastSearchTerm, startPos, forward)
+	// Get the findManager and use it directly
+	findManager := mh.editor.GetFindManager()
+	if findManager == nil {
+		mh.statusBar.SetTemporaryMessage("Find error: find manager not initialized")
+		return
+	}
 
+	foundPos, found := findManager.FindNext(forward)
 	if found {
-		mh.editor.SetCursor(foundPos)                                      // Move cursor to start of match
-		mh.editor.HighlightMatches(mh.lastSearchTerm)                      // Highlight all matches
-		mh.lastMatchPos = &foundPos                                        // Store found position
-		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm) // Show success message
+		mh.editor.SetCursor(foundPos) // Move cursor to start of match
+		mh.editor.ScrollToCursor()    // Ensure cursor is visible
+		mh.lastMatchPos = &foundPos   // Store found position
+		mh.lastSearchForward = forward // Remember direction for next 'n'/'N'
+		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm)
 		logger.Debugf("ModeHandler: Found '%s' at %v", mh.lastSearchTerm, foundPos)
 	} else {
-		// Only clear highlights if pattern not found
-		mh.editor.ClearHighlights() // Clear previous highlights when not found
-		mh.lastMatchPos = nil       // Reset last match position
 		mh.statusBar.SetTemporaryMessage("Pattern not found: %s", mh.lastSearchTerm)
 		logger.Debugf("ModeHandler: Pattern not found: '%s'", mh.lastSearchTerm)
 	}

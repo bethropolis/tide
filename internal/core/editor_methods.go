@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
@@ -64,15 +66,14 @@ func (e *Editor) MoveCursor(deltaLine, deltaCol int) {
 	}
 
 	e.cursorManager.Move(deltaLine, deltaCol)
-	// Sync cursor state back to Editor
-	e.Cursor = e.cursorManager.GetPosition()
-	// Also update selection end if selecting
-	if e.selecting {
-		e.selectionEnd = e.Cursor
+
+	// Update selection end if we're selecting
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
 	}
 
 	logger.Debugf("MoveCursor: Delta(%d,%d) → NewCursor(%d,%d)",
-		deltaLine, deltaCol, e.Cursor.Line, e.Cursor.Col)
+		deltaLine, deltaCol, e.GetCursor().Line, e.GetCursor().Col)
 }
 
 func (e *Editor) PageMove(deltaPages int) {
@@ -82,14 +83,14 @@ func (e *Editor) PageMove(deltaPages int) {
 	}
 
 	e.cursorManager.PageMove(deltaPages)
-	// Sync cursor state back to Editor
-	e.Cursor = e.cursorManager.GetPosition()
-	if e.selecting {
-		e.selectionEnd = e.Cursor
+
+	// Update selection end if we're selecting
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
 	}
 
 	logger.Debugf("PageMove: Delta(%d) → NewCursor(%d,%d)",
-		deltaPages, e.Cursor.Line, e.Cursor.Col)
+		deltaPages, e.GetCursor().Line, e.GetCursor().Col)
 }
 
 func (e *Editor) Home() {
@@ -99,13 +100,13 @@ func (e *Editor) Home() {
 	}
 
 	e.cursorManager.MoveToLineStart()
-	// Sync cursor state back to Editor
-	e.Cursor = e.cursorManager.GetPosition()
-	if e.selecting {
-		e.selectionEnd = e.Cursor
+
+	// Update selection end if we're selecting
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("Home: NewCursor(%d,%d)", e.Cursor.Line, e.Cursor.Col)
+	logger.Debugf("Home: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
 }
 
 func (e *Editor) End() {
@@ -115,37 +116,47 @@ func (e *Editor) End() {
 	}
 
 	e.cursorManager.MoveToLineEnd()
-	// Sync cursor state back to Editor
-	e.Cursor = e.cursorManager.GetPosition()
-	if e.selecting {
-		e.selectionEnd = e.Cursor
+
+	// Update selection end if we're selecting
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("End: NewCursor(%d,%d)", e.Cursor.Line, e.Cursor.Col)
+	logger.Debugf("End: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
 }
 
-// Find operations
+// Find operations delegated to findManager
 func (e *Editor) Find(term string, startPos types.Position, forward bool) (types.Position, bool) {
-	// Basic implementation - can be moved to a find manager later
-	if term == "" {
-		return types.Position{Line: -1, Col: -1}, false
+	if e.findManager == nil {
+		logger.Warnf("Editor.Find: findManager is nil")
+		return types.Position{}, false
 	}
-
-	// Implementation using buffer
-	// This implementation is simplified and should be replaced with proper logic
-	logger.Debugf("Find not fully implemented: searching for '%s'", term)
-	return types.Position{Line: -1, Col: -1}, false
+	err := e.findManager.HighlightMatches(term)
+	if err != nil {
+		return types.Position{}, false
+	}
+	matchPos, found := e.findManager.FindNext(forward)
+	if found {
+		return matchPos, true
+	}
+	return types.Position{}, false
 }
 
-func (e *Editor) HighlightMatches(term string) {
-	// Basic implementation - can be moved to a find manager later
-	if term == "" {
-		e.ClearHighlights()
-		return
+func (e *Editor) HighlightMatches(term string) error {
+	if e.findManager == nil {
+		logger.Warnf("Editor.HighlightMatches: findManager is nil")
+		return fmt.Errorf("find manager not initialized")
 	}
+	return e.findManager.HighlightMatches(term)
+}
 
-	// Implementation to highlight matches in the buffer
-	logger.Debugf("HighlightMatches not fully implemented: highlighting '%s'", term)
+// Replace performs a find and replace operation using findManager
+func (e *Editor) Replace(pattern, replacement string, global bool) (int, error) {
+	if e.findManager == nil {
+		logger.Warnf("Editor.Replace: findManager is nil")
+		return 0, fmt.Errorf("find manager not initialized")
+	}
+	return e.findManager.Replace(pattern, replacement, global)
 }
 
 // SaveBuffer handles buffer saving

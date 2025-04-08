@@ -24,7 +24,7 @@ type Manager struct {
 // EditorInterface defines methods the cursor manager needs from the editor
 type EditorInterface interface {
 	GetBuffer() buffer.Buffer // Changed return type to concrete buffer.Buffer
-	GetCursor() types.Position
+	
 }
 
 // NewManager creates a new cursor manager

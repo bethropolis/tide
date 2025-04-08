@@ -27,9 +27,10 @@ type EditorAPI interface {
 	// --- Buffer Modification ---
 	// Use with caution! Ensure plugins don't corrupt state.
 	InsertText(pos types.Position, text []byte) error
-
 	DeleteRange(start, end types.Position) error
 	// ReplaceRange(start, end types.Position, text []byte) error // Combine delete/insert
+	SaveBuffer() error                                             // Save buffer to file
+	Replace(pattern, replacement string, global bool) (int, error) // Add Replace for substitution command
 
 	// --- Cursor & Viewport ---
 	GetCursor() types.Position
@@ -52,6 +53,9 @@ type EditorAPI interface {
 	SetTheme(name string) error
 	GetTheme() *theme.Theme
 	ListThemes() []string
+
+	// --- Application Control ---
+	RequestQuit(force bool) // Signal the application to quit
 
 	// --- Configuration (Future) ---
 	// GetConfigValue(key string) (interface{}, error)
