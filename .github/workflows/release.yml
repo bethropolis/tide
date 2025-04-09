@@ -2,11 +2,9 @@ name: Release Go Binaries
 
 # Trigger workflow on tag push, PR, or manual dispatch
 on:
-  push:
-    branches:
-      - main # Run on pushes to main (e.g., when PRs are merged)
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag_name:
@@ -186,3 +184,19 @@ jobs:
               ./dist/*.tar.gz
               ./dist/*.zip
             if-no-files-found: error # Fail if no archives created
+
+        # --- Create GitHub Release ---
+        - name: Create Release
+          # Run on tag pushes or after auto-tagging a PR merge
+          if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+          uses: softprops/action-gh-release@v1
+          with:
+            tag_name: ${{ steps.version_info.outputs.VERSION }}
+            name: "Release ${{ steps.version_info.outputs.VERSION }}"
+            draft: false
+            prerelease: false
+            files: |
+              ./dist/*.tar.gz
+              ./dist/*.zip
+          env:
+              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
