@@ -52,11 +52,7 @@ jobs:
                 x: false
                 race: false
                 # Inject version info via ldflags - ensure 'main.' path is correct
-                ldflags: | 
-                  -s -w
-                  -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}'
-                  -X 'main.Commit=${{ github.sha }}'
-                  -X 'main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')'
+                ldflags: "-s -w -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=$(date -u +''%Y-%m-%dT%H:%M:%SZ'')'"
                 buildmode: default
                 trimpath: true
 
