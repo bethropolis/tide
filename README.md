@@ -3,11 +3,10 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/bethropolis/tide)](https://goreportcard.com/report/github.com/bethropolis/tide)
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/bethropolis/tide?style=flat-square&labelColor=1e1e2e&color=89b4fa)](https://github.com/bethropolis/tide/releases/latest)
 [![GitHub license](https://img.shields.io/github/license/bethropolis/tide?style=flat-square&labelColor=1e1e2e&color=cba6f7)](https://github.com/bethropolis/tide/blob/main/LICENSE)
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/bethropolis/tide/go.yml?branch=main&style=flat-square&labelColor=1e1e2e&logo=githubactions)](https://github.com/bethropolis/tide/actions/workflows/go.yml) <!-- Add after setting up CI -->
+[![Release Go Binaries](https://github.com/bethropolis/tide/actions/workflows/release.yml/badge.svg)](https://github.com/bethropolis/tide/actions/workflows/release.yml)
 [![Go Version](https://img.shields.io/badge/Go-1.21+-a6e3a1?style=flat-square&logo=go&labelColor=1e1e2e)](https://golang.org/doc/go1.21)
 [![GitHub stars](https://img.shields.io/github/stars/bethropolis/tide?style=flat-square&labelColor=1e1e2e&color=f9e2af)](https://github.com/bethropolis/tide/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/bethropolis/tide?style=flat-square&labelColor=1e1e2e&color=f38ba8)](https://github.com/bethropolis/tide/issues)
-[![Codecov](https://img.shields.io/codecov/c/github/bethropolis/tide?style=flat-square&labelColor=1e1e2e&logo=codecov&token=YOUR_CODECOV_TOKEN)](https://codecov.io/gh/bethropolis/tide) <!-- Add after setting up Codecov -->
 
 Tide is a modern, extensible terminal-based text editor written purely in Go. It features efficient syntax highlighting powered by Tree-sitter and is built with a focus on clean, modular code for stability and future growth.
 
@@ -55,7 +54,7 @@ Ensure you have **Go 1.21+** installed.
 
 ```bash
 # Install latest release
-go install github.com/bethropolis/tide/cli/tide@latest
+go install github.com/bethropolis/tide/cmd/tide@latest
 
 # Or, build from source:
 # git clone https://github.com/bethropolis/tide.git
