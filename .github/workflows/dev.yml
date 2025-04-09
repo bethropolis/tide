@@ -40,7 +40,11 @@ jobs:
 
             - name: Set build date
               id: build_date
-              run: echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+              run: |
+                # Calculate build date upfront to avoid shell expansion issues in ldflags
+                BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+                echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
+                echo "Using build date: ${BUILD_DATE}"
               shell: bash
 
             # --- Build with xgo and ldflags ---
@@ -57,7 +61,7 @@ jobs:
                 x: false
                 race: false
                 # Inject version info via ldflags - ensure 'main.' path is correct
-                ldflags: "-s -w -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=${{ steps.build_date.outputs.BUILD_DATE }}'"
+                ldflags: "-s -w -X main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }} -X main.Commit=${{ github.sha }} -X main.BuildDate=${{ steps.build_date.outputs.BUILD_DATE }}"
                 buildmode: default
                 trimpath: true
 
