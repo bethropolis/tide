@@ -3,6 +3,8 @@ name: Release Go Binaries
 # Trigger workflow on tag push or manual dispatch
 on:
   push:
+    tags:
+      - 'v*' # Trigger on tags like v1.0.0, v0.1.0 etc.
     
   workflow_dispatch:
     inputs:
