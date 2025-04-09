@@ -26,3 +26,16 @@ go.work.sum
 
 # test files
 guide.md
+
+# log files
+*.log
+
+# tide build
+tide
+
+# tide cache
+tide_cache
+test.md
+fix.md
+theme.toml
+*.txt

@@ -1,0 +1,25 @@
+{
+    "person": {
+        "name": "John Doe",
+        "age": 30,
+        "email": "john.doe@example.com",
+        "isEmployed": true,
+        "address": {
+            "street": "123 Main St",
+            "city": "Anytown",
+            "zipCode": "12345"
+        },
+        "phoneNumbers": [
+            {
+                "type": "home",
+                "number": "555-1234"
+            },
+            {
+                "type": "work",
+                "number": "555-5678"
+            }
+        ],
+        "hobbies": ["reading", "hiking", "coding"],
+        "spouse": null
+    }
+}
