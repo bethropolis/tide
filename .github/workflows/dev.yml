@@ -3,8 +3,7 @@ name: Release Go Binaries
 # Trigger workflow on tag push or manual dispatch
 on:
   push:
-    tags:
-      - 'v*'
+    
   workflow_dispatch:
     inputs:
       tag_name:
@@ -14,8 +13,7 @@ on:
       release_name:
         description: 'Name of the release'
         required: false
-        default: 'Manual Release'
-
+       
 permissions:
     contents: write  # Required for creating releases
 
@@ -26,48 +24,56 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
+              with:
+                fetch-depth: 0 # Fetches all history for accurate commit info if needed
 
             - name: Set up Go
               uses: actions/setup-go@v5
               with:
-                    go-version: '>=1.23.7'
+                    go-version: '>=1.21' # Match your project requirement
 
             - name: Create directories
               run: mkdir -p ./dist/package
               shell: bash
 
-            - name: Setup xgo
+            # --- Build with xgo and ldflags ---
+            - name: Setup xgo for Cross-Compilation
               uses: crazy-max/ghaction-xgo@v3
               with:
                 xgo_version: latest
-                go_version: 1.21
+                go_version: 1.21 # Keep consistent with setup-go if possible
                 dest: dist
-                prefix: tide
+                prefix: tide # Output binary prefix
+                pkg: ./cmd/tide # Specify the main package path
                 targets: windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
                 v: true
                 x: false
                 race: false
-                ldflags: -s -w
+                # Inject version info via ldflags - ensure 'main.' path is correct
+                ldflags: > # Use > for multi-line string
+                  -s -w
+                  -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}'
+                  -X 'main.Commit=${{ github.sha }}'
+                  -X 'main.BuildDate=$(date -u +'%Y-%m-%dT%H:%M:%SZ')'
                 buildmode: default
                 trimpath: true
 
+            # --- Archive Binaries ---
             - name: Create Archives
               run: |
                 BINARY_NAME="tide"
-                REF_NAME="${GITHUB_REF_NAME:-latest}"
-                
+                # Determine version directly from GitHub context
+                VERSION_TAG="${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}"
+
                 echo "Files in dist directory:"
                 ls -la ./dist/
-                
+
                 # Process each binary output by xgo
-                for BINARY_PATH in ./dist/tide-*; do
-                  # Extract platform info from filename
+                for BINARY_PATH in ./dist/tide-*; do 
                   FILENAME=$(basename "$BINARY_PATH")
-                  
-                  # Skip if not a file
-                  [ ! -f "$BINARY_PATH" ] && continue
-                  
-                  # Parse OS/ARCH from filename pattern tide-{os}-{arch}[.exe]
+                  [ ! -f "$BINARY_PATH" ] && continue # Skip if not a file
+
+                  # Parse OS/ARCH (keep existing logic)
                   if [[ "$FILENAME" == *windows* ]]; then
                     OS="windows"
                     ARCH=$(echo "$FILENAME" | sed -E 's/tide-windows-([^.]+)\.exe/\1/')
@@ -79,37 +85,34 @@ jobs:
                     EXT=".tar.gz"
                     BINARY_FILE="$BINARY_NAME"
                   fi
-                  
-                  ARCHIVE_NAME="${BINARY_NAME}-${REF_NAME}-${OS}-${ARCH}${EXT}"
-                  
+
+                  # Use VERSION_TAG in archive name
+                  ARCHIVE_NAME="${BINARY_NAME}-${VERSION_TAG}-${OS}-${ARCH}${EXT}"
+
                   echo "Processing: $FILENAME for $OS-$ARCH → $ARCHIVE_NAME"
-                  
-                  # Clear and prepare package directory
-                  rm -rf ./dist/package/*
+
+                  rm -rf ./dist/package/* # Clear package dir
                   cp "$BINARY_PATH" "./dist/package/$BINARY_FILE"
                   cp README.md ./dist/package/ || echo "Warning: README.md not found"
-                  
-                  # Create archive based on OS
+                  cp LICENSE ./dist/package/ || echo "Warning: LICENSE not found" # Add LICENSE
+
+                  # Create archive
                   if [[ "$OS" == "windows" ]]; then
                     7z a "./dist/$ARCHIVE_NAME" "./dist/package/*"
                   else
                     tar -czvf "./dist/$ARCHIVE_NAME" -C ./dist/package .
                   fi
-                  
-                  # Add to artifacts list
-                  echo "$ARCHIVE_NAME" >> ./dist/artifacts_list.txt
                 done
-                
+
                 echo "Created archives:"
                 ls -la ./dist/*.zip ./dist/*.tar.gz 2>/dev/null || echo "No archives found"
               shell: bash
 
-            - name: Upload Artifacts
+            - name: Upload Artifacts (for testing/interim use)
               uses: actions/upload-artifact@v4
               with:
-                name: tide-binaries
+                name: tide-binaries-${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }} # Include version in artifact name
                 path: |
                   ./dist/*.tar.gz
                   ./dist/*.zip
-                if-no-files-found: warn
-
+                if-no-files-found: error # Fail if no archives created
