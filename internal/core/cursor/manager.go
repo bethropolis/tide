@@ -1,6 +1,8 @@
 package cursor
 
 import (
+	"math" // Adding math import for Log10
+
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/logger"
@@ -15,19 +17,21 @@ type Editor interface {
 
 // Manager handles cursor positioning and viewport management
 type Manager struct {
-	editor      Editor
-	position    types.Position
-	viewportTop int
-	viewWidth   int
-	viewHeight  int
+	editor       Editor
+	position     types.Position
+	viewportTop  int
+	viewportLeft int
+	viewWidth    int
+	viewHeight   int
 }
 
 // NewManager creates a new cursor manager
 func NewManager(editor Editor) *Manager {
 	return &Manager{
-		editor:      editor,
-		position:    types.Position{Line: 0, Col: 0},
-		viewportTop: 0,
+		editor:       editor,
+		position:     types.Position{Line: 0, Col: 0},
+		viewportTop:  0,
+		viewportLeft: 0,
 	}
 }
 
@@ -37,9 +41,9 @@ func (m *Manager) SetViewSize(width, height int) {
 	m.viewHeight = height
 }
 
-// GetViewport returns the current viewport top line and height
+// GetViewport returns the current viewport top line and left column
 func (m *Manager) GetViewport() (int, int) {
-	return m.viewportTop, m.viewHeight
+	return m.viewportTop, m.viewportLeft
 }
 
 // GetPosition returns the current cursor position
@@ -186,26 +190,86 @@ func (m *Manager) GetBufferCol(line string, visualCol int) int {
 
 // ScrollToCursor ensures the cursor is visible in the viewport
 func (m *Manager) ScrollToCursor() {
-	if m.viewHeight <= 0 {
+	if m.viewHeight <= 0 || m.viewWidth <= 0 {
 		// View not initialized yet
 		return
 	}
 
-	scrollOff := config.Get().Editor.ScrollOff
+	// --- Calculate Gutter Width (needed for textAreaWidth) ---
+	buffer := m.editor.GetBuffer()
+	lineCount := buffer.LineCount()
+	if lineCount == 0 {
+		lineCount = 1
+	}
+	maxDigits := int(math.Log10(float64(lineCount))) + 1
+	lineNumberPadding := 1
+	gutterWidth := maxDigits + lineNumberPadding
+	if gutterWidth >= m.viewWidth {
+		gutterWidth = 0 // Disable if no space
+	}
+	// --- End Gutter Width ---
 
-	// Ensure cursor is visible vertically
-	if m.position.Line < m.viewportTop+scrollOff {
+	effectiveScrollOff := m.editor.ScrollOff()
+	if effectiveScrollOff < 0 {
+		effectiveScrollOff = 0
+	}
+
+	oldViewportY, oldViewportX := m.viewportTop, m.viewportLeft
+
+	// --- Vertical Scrolling ---
+	if m.position.Line < m.viewportTop+effectiveScrollOff {
 		// Cursor is above the viewport plus scroll-off
-		m.viewportTop = m.position.Line - scrollOff
+		m.viewportTop = m.position.Line - effectiveScrollOff
 		if m.viewportTop < 0 {
 			m.viewportTop = 0
 		}
-	} else if m.position.Line >= m.viewportTop+m.viewHeight-scrollOff {
+	} else if m.position.Line >= m.viewportTop+m.viewHeight-effectiveScrollOff {
 		// Cursor is below the viewport minus scroll-off
-		m.viewportTop = m.position.Line - m.viewHeight + scrollOff + 1
+		m.viewportTop = m.position.Line - m.viewHeight + effectiveScrollOff + 1
 		if m.viewportTop < 0 {
 			m.viewportTop = 0
 		}
+	}
+
+	// --- Horizontal Scrolling (Refined) ---
+	lineBytes, err := buffer.Line(m.position.Line)
+	cursorVisualCol := 0 // Visual position relative to start of the line (col 0)
+	if err == nil {
+		tabWidth := config.Get().Editor.TabWidth // Get current tab width
+		cursorVisualCol = GetVisualCol(string(lineBytes), m.position.Col, tabWidth)
+	} else {
+		logger.Warnf("ScrollToCursor: Failed to get line %d: %v", m.position.Line, err)
+	}
+
+	textAreaWidth := m.viewWidth - gutterWidth // Actual width available for text
+	if textAreaWidth < 1 {
+		textAreaWidth = 1 // Avoid division by zero or weirdness
+	}
+
+	newViewportX := m.viewportLeft // Start with current value
+
+	if cursorVisualCol < m.viewportLeft {
+		// Cursor went left of the visible area, scroll left to show it
+		newViewportX = cursorVisualCol
+	} else if cursorVisualCol >= m.viewportLeft+textAreaWidth {
+		// Cursor went right of the visible area, scroll right to show it
+		// Place cursor at the last column by setting viewportX appropriately
+		newViewportX = cursorVisualCol - textAreaWidth + 1
+	}
+
+	// Clamp viewportX
+	if newViewportX < 0 {
+		newViewportX = 0
+	}
+	m.viewportLeft = newViewportX // Update the manager's state
+
+	// --- Logging ---
+	if m.viewportTop != oldViewportY || m.viewportLeft != oldViewportX {
+		logger.DebugTagf("cursor",
+			"ScrollToCursor: Cursor(L:%d, C:%d Vis:%d) Viewport(Y:%d->%d, X:%d->%d) TW:%d GH:%d TVW:%d",
+			m.position.Line, m.position.Col, cursorVisualCol,
+			oldViewportY, m.viewportTop, oldViewportX, m.viewportLeft,
+			m.viewWidth, m.viewHeight, textAreaWidth)
 	}
 }
 

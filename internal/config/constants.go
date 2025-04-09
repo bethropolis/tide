@@ -23,4 +23,4 @@ const MessageTimeout = 4 * time.Second
 // These could be moved to NewDefaultConfig(), keeping here for now
 const DefaultTabWidth = 4
 const DefaultScrollOff = 3
-const SystemClipboard = false
+const SystemClipboard = true

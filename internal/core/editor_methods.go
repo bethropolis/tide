@@ -143,7 +143,7 @@ func (e *Editor) Find(term string, startPos types.Position, forward bool) (types
 	if err != nil {
 		return types.Position{}, false
 	}
-	matchPos, found := e.findManager.FindNext(forward)
+	matchPos, found, _ := e.findManager.FindNext(forward) // Ignore wrapped status
 	if found {
 		return matchPos, true
 	}
@@ -167,21 +167,25 @@ func (e *Editor) Replace(pattern, replacement string, global bool) (int, error) 
 	return e.findManager.Replace(pattern, replacement, global)
 }
 
-// SaveBuffer handles buffer saving
-func (e *Editor) SaveBuffer() error {
-	filePath := ""
-	if bufWithFP, ok := e.buffer.(interface{ FilePath() string }); ok {
-		filePath = bufWithFP.FilePath()
+// SaveBuffer handles buffer saving, accepting an optional override path.
+func (e *Editor) SaveBuffer(filePath ...string) error { // Use variadic string
+	savePath := ""
+	if len(filePath) > 0 {
+		savePath = filePath[0] // Use first provided path if given
 	}
-
-	err := e.buffer.Save(filePath)
+	// Delegate to buffer's save method
+	err := e.buffer.Save(savePath)
 	if err != nil {
-		return err
+		return err // Propagate error
 	}
-
-	// Dispatch save event
+	// Dispatch save event with the ACTUAL path saved to
 	if e.eventManager != nil {
-		e.eventManager.Dispatch(event.TypeBufferSaved, event.BufferSavedData{FilePath: filePath})
+		// Get the potentially updated path from the buffer
+		actualPath := ""
+		if bufWithFP, ok := e.buffer.(interface{ FilePath() string }); ok {
+			actualPath = bufWithFP.FilePath()
+		}
+		e.eventManager.Dispatch(event.TypeBufferSaved, event.BufferSavedData{FilePath: actualPath})
 	}
 	return nil
 }

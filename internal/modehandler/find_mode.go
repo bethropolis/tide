@@ -85,16 +85,27 @@ func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
 		return
 	}
 
-	foundPos, found := findManager.FindNext(forward)
+	// Call FindNext which now returns wrap status
+	foundPos, found, wrapped := findManager.FindNext(forward)
+
 	if found {
 		mh.editor.SetCursor(foundPos)  // Move cursor to start of match
 		mh.editor.ScrollToCursor()     // Ensure cursor is visible
 		mh.lastMatchPos = &foundPos    // Store found position
 		mh.lastSearchForward = forward // Remember direction for next 'n'/'N'
-		mh.statusBar.SetTemporaryMessage("Found: '%s'", mh.lastSearchTerm)
-		logger.Debugf("ModeHandler: Found '%s' at %v", mh.lastSearchTerm, foundPos)
+
+		message := "Found: '" + mh.lastSearchTerm + "'"
+		if wrapped {
+			message += " (wrapped)" // Add wrap indicator
+		}
+		mh.statusBar.SetTemporaryMessage(message)
+		logger.Debugf("ModeHandler: Found '%s' at %v (wrapped: %v)", mh.lastSearchTerm, foundPos, wrapped)
 	} else {
-		mh.statusBar.SetTemporaryMessage("Pattern not found: %s", mh.lastSearchTerm)
+		message := "Pattern not found: " + mh.lastSearchTerm
+		if isSubsequent {
+			message += " (searched entire file)"
+		}
+		mh.statusBar.SetTemporaryMessage(message)
 		logger.Debugf("ModeHandler: Pattern not found: '%s'", mh.lastSearchTerm)
 	}
 }

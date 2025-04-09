@@ -178,9 +178,10 @@ func (api *appEditorAPI) ListThemes() []string {
 	return api.app.GetThemeManager().ListThemes()
 }
 
-// SaveBuffer saves the current buffer to disk
-func (api *appEditorAPI) SaveBuffer() error {
-	return api.app.editor.SaveBuffer()
+// SaveBuffer saves the current buffer to disk, optionally to a new filename
+func (api *appEditorAPI) SaveBuffer(filePath ...string) error {
+	// Delegate to editor method, passing arguments through
+	return api.app.editor.SaveBuffer(filePath...)
 }
 
 // RequestQuit signals the application to quit

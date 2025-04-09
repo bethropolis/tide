@@ -7,6 +7,7 @@ import (
 	"time"
 
 	// "github.com/bethropolis/tide/internal/core" // Might need editor state later
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/theme" // Import theme package
 	"github.com/bethropolis/tide/internal/types" // For cursor position etc.
 	"github.com/gdamore/tcell/v2"
@@ -115,6 +116,10 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int, activeTheme *t
 		return
 	}
 	y := height - 1 // Status bar is always the last line
+
+	// --- Add Logging ---
+	logger.DebugTagf("draw", "statusbar.Draw: Drawing on Y=%d (Screen Height=%d)", y, height)
+	// --- End Logging ---
 
 	// Ensure theme is valid
 	if activeTheme == nil {

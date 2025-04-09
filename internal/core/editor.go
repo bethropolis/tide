@@ -47,9 +47,10 @@ type Editor struct {
 
 // NewEditor creates a new Editor instance with a given buffer.
 func NewEditor(buf buffer.Buffer) *Editor {
+	cfg := config.Get() // Get loaded config
 	e := &Editor{
 		buffer:           buf,
-		scrollOff:        config.Get().Editor.ScrollOff,
+		scrollOff:        cfg.Editor.ScrollOff,
 		syntaxHighlights: make(hl.HighlightResult),
 		syntaxTree:       nil,
 		highlightMutex:   sync.RWMutex{},
@@ -59,11 +60,11 @@ func NewEditor(buf buffer.Buffer) *Editor {
 	e.textOps = text.NewOperations(e)
 	e.cursorManager = cursor.NewManager(e)
 	e.selectionManager = selection.NewManager(e)
-	e.clipboardManager = clipboard.NewManager(e)
-	e.historyManager = history.NewManager(e, history.DefaultMaxHistory) // Initialize history manager
-	e.findManager = find.NewManager(e)                                  // Initialize find manager
+	e.clipboardManager = clipboard.NewManager(e, cfg.Editor.SystemClipboard) // Pass system clipboard preference
+	e.historyManager = history.NewManager(e, history.DefaultMaxHistory)
+	e.findManager = find.NewManager(e)
 
-	logger.DebugTagf("core", "Editor created and managers initialized.")
+	logger.DebugTagf("core", "Editor created and managers initialized. System Clipboard: %v", cfg.Editor.SystemClipboard)
 	return e
 }
 

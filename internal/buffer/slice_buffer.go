@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"unicode/utf8"
 
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types" // Import types instead of core
 	sitter "github.com/smacker/go-tree-sitter"   // Import tree-sitter for Point
 )
@@ -95,26 +97,56 @@ func (sb *SliceBuffer) Bytes() []byte {
 	return buffer.Bytes()
 }
 
-// Save writes the buffer content to the stored filePath.
+// Save writes the buffer content. Uses provided filePath if not empty, otherwise internal path.
+// Updates internal filePath on successful save to a new location.
 func (sb *SliceBuffer) Save(filePath string) error {
-	path := sb.filePath
-	if filePath != "" { // Allow overriding path during save
-		path = filePath
+	savePath := filePath
+	if savePath == "" { // If no path provided, use internal path
+		savePath = sb.filePath
 	}
-	if path == "" {
+
+	if savePath == "" {
 		return errors.New("no file path specified for saving")
 	}
 
 	content := sb.Bytes()
-	err := os.WriteFile(path, content, 0644)
+	// Use TempFile and Rename for atomic save (safer)
+	tempFile, err := os.CreateTemp(filepath.Dir(savePath), "."+filepath.Base(savePath)+".tmp")
 	if err != nil {
-		return fmt.Errorf("failed to write file '%s': %w", path, err)
+		// Fallback if temp file creation fails (e.g., permissions)
+		logger.Warnf("Could not create temp file for saving, attempting direct write: %v", err)
+		err = os.WriteFile(savePath, content, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write file '%s': %w", savePath, err)
+		}
+	} else {
+		tempPath := tempFile.Name()
+		logger.Debugf("Saving to temp file: %s", tempPath)
+		_, err = tempFile.Write(content)
+		// Close file before renaming
+		closeErr := tempFile.Close()
+		if err != nil {
+			os.Remove(tempPath) // Clean up temp file on write error
+			return fmt.Errorf("failed to write to temporary file '%s': %w", tempPath, err)
+		}
+		if closeErr != nil {
+			os.Remove(tempPath) // Clean up temp file on close error
+			return fmt.Errorf("failed to close temporary file '%s': %w", tempPath, closeErr)
+		}
+
+		// Rename temporary file to the final path
+		err = os.Rename(tempPath, savePath)
+		if err != nil {
+			os.Remove(tempPath) // Clean up temp file on rename error
+			return fmt.Errorf("failed to rename temporary file to '%s': %w", savePath, err)
+		}
+		logger.Debugf("Renamed temp file %s to %s", tempPath, savePath)
 	}
 
-	// Update internal path if saved to a new location
-	sb.filePath = path
-	// Reset modified status after successful save
-	sb.modified = false
+	// --- Update internal state ONLY after successful save ---
+	sb.filePath = savePath // Update buffer's path to the saved path
+	sb.modified = false    // Reset modified status
+	logger.Infof("Buffer saved successfully to %s", savePath)
 	return nil
 }
 

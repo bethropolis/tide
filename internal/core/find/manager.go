@@ -1,6 +1,7 @@
 package find
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bethropolis/tide/internal/buffer"
+	"github.com/bethropolis/tide/internal/core/history"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
@@ -20,6 +22,7 @@ type EditorInterface interface {
 	SetCursor(types.Position)
 	GetEventManager() *event.Manager
 	ScrollToCursor()
+	GetHistoryManager() *history.Manager
 }
 
 // Manager handles find, replace, and search highlighting logic.
@@ -43,7 +46,8 @@ func NewManager(editor EditorInterface) *Manager {
 }
 
 // FindNext finds the next occurrence and moves cursor to it.
-func (m *Manager) FindNext(forward bool) (types.Position, bool) {
+// Now returns wrapped status as the third return value.
+func (m *Manager) FindNext(forward bool) (types.Position, bool, bool) {
 	m.mutex.Lock() // Lock for accessing lastSearchTerm etc.
 	term := m.lastSearchTerm
 	re := m.lastSearchRegex
@@ -51,7 +55,7 @@ func (m *Manager) FindNext(forward bool) (types.Position, bool) {
 	m.mutex.Unlock() // Unlock after reading shared state
 
 	if term == "" || re == nil {
-		return types.Position{}, false
+		return types.Position{}, false, false
 	}
 
 	startPos := m.editor.GetCursor()
@@ -65,7 +69,7 @@ func (m *Manager) FindNext(forward bool) (types.Position, bool) {
 		// For backward search, we'll find matches before the current match
 	}
 
-	foundPos, found := m.findInternal(re, startPos, forward)
+	foundPos, found, wrapped := m.findInternal(re, startPos, forward)
 
 	if found {
 		// Update last match position
@@ -74,86 +78,167 @@ func (m *Manager) FindNext(forward bool) (types.Position, bool) {
 		m.lastSearchForward = forward
 		m.mutex.Unlock()
 
-		return foundPos, true
+		return foundPos, true, wrapped
 	}
 
-	return types.Position{}, false
+	return types.Position{}, false, false
 }
 
 // findInternal performs the actual search using buffer access.
-func (m *Manager) findInternal(re *regexp.Regexp, startPos types.Position, forward bool) (types.Position, bool) {
+// Returns position, found status, and wrap status.
+func (m *Manager) findInternal(re *regexp.Regexp, startPos types.Position, forward bool) (pos types.Position, found bool, wrapped bool) {
 	buf := m.editor.GetBuffer()
 	lineCount := buf.LineCount()
-	currentLine := startPos.Line
-	currentCol := startPos.Col
+	if lineCount == 0 {
+		return types.Position{}, false, false
+	}
+
+	originalStartLine := startPos.Line
+	originalStartCol := startPos.Col
+
+	// Normalize start position just in case
+	if originalStartLine < 0 {
+		originalStartLine = 0
+	}
+	if originalStartLine >= lineCount {
+		originalStartLine = lineCount - 1
+	}
+	// Note: Col clamping happens within loops
 
 	if forward {
-		// Forward search (current line to end, then wrap to beginning)
-		for lineIdx := currentLine; lineIdx < lineCount; lineIdx++ {
+		// --- Phase 1: Search from startPos to end of buffer ---
+		currentCol := originalStartCol // Use original col for first line search
+		for lineIdx := originalStartLine; lineIdx < lineCount; lineIdx++ {
 			lineBytes, err := buf.Line(lineIdx)
 			if err != nil {
 				continue
 			}
 
-			// Calculate byte offset for starting the search
 			searchStartByteOffset := 0
-			if lineIdx == currentLine {
+			if lineIdx == originalStartLine {
 				searchStartByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
 				if searchStartByteOffset < 0 {
 					searchStartByteOffset = 0
 				}
 			}
 
-			// Search from the current position to the end of line
 			searchBytes := lineBytes[searchStartByteOffset:]
 			loc := re.FindIndex(searchBytes)
 			if loc != nil {
-				// Found a match - convert byte offset back to rune column
 				matchByteOffset := searchStartByteOffset + loc[0]
 				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
-				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true, false // Found, not wrapped
 			}
-
-			// Reset column position for next line
-			currentCol = 0
+			currentCol = 0 // Reset start col for subsequent lines
 		}
 
-		// No match found - could implement wrap-around search here
-	} else {
-		// Backward search (current line to beginning, then wrap to end)
-		for lineIdx := currentLine; lineIdx >= 0; lineIdx-- {
+		// --- Phase 2: Wrap around - Search from start of buffer to original startPos ---
+		logger.DebugTagf("find", "Wrapping forward search to beginning.")
+		for lineIdx := 0; lineIdx <= originalStartLine; lineIdx++ { // Include original line
 			lineBytes, err := buf.Line(lineIdx)
 			if err != nil {
 				continue
 			}
 
-			// For backward search on current line, we search up to the current position
-			searchEndByteOffset := len(lineBytes)
-			if lineIdx == currentLine {
-				searchEndByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
-				if searchEndByteOffset < 0 || searchEndByteOffset > len(lineBytes) {
-					searchEndByteOffset = len(lineBytes)
-				}
+			searchBytes := lineBytes
+			searchEndByteOffset := len(lineBytes) // Default: search whole line
+
+			if lineIdx == originalStartLine {
+				// On the original line, only search *up to* the original start column
+				searchEndByteOffset = runeIndexToByteOffset(lineBytes, originalStartCol)
+				if searchEndByteOffset < 0 {
+					searchEndByteOffset = 0
+				} // Clamp
+				searchBytes = lineBytes[:searchEndByteOffset]
 			}
 
-			// Search the line up to the current position
-			searchBytes := lineBytes[:searchEndByteOffset]
-
-			// Find all matches before the current position and take the last one
-			locs := re.FindAllIndex(searchBytes, -1)
-			if len(locs) > 0 {
-				// Take the last match on the line (closest to the current position)
-				lastMatch := locs[len(locs)-1]
-				matchByteOffset := lastMatch[0]
+			loc := re.FindIndex(searchBytes) // Find *first* match on wrapped lines
+			if loc != nil {
+				matchByteOffset := loc[0]
 				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
-				return types.Position{Line: lineIdx, Col: matchRuneCol}, true
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true, true // Found, wrapped
 			}
 		}
 
-		// No match found - could implement wrap-around search here
+	} else { // Backward search
+		// --- Phase 1: Search from startPos to beginning of buffer ---
+		currentCol := originalStartCol // Use original col for first line search
+		for lineIdx := originalStartLine; lineIdx >= 0; lineIdx-- {
+			lineBytes, err := buf.Line(lineIdx)
+			if err != nil {
+				continue
+			}
+
+			searchEndByteOffset := len(lineBytes) // Default: whole line
+			if lineIdx == originalStartLine {
+				searchEndByteOffset = runeIndexToByteOffset(lineBytes, currentCol)
+				if searchEndByteOffset < 0 {
+					searchEndByteOffset = 0
+				} // Clamp
+			}
+
+			searchBytes := lineBytes[:searchEndByteOffset]
+			locs := re.FindAllIndex(searchBytes, -1)
+			if len(locs) > 0 {
+				lastMatch := locs[len(locs)-1] // Get last match before cursor/end offset
+				matchByteOffset := lastMatch[0]
+				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true, false // Found, not wrapped
+			}
+			// No need to reset currentCol for backward line iteration
+		}
+
+		// --- Phase 2: Wrap around - Search from end of buffer down to original startPos ---
+		logger.DebugTagf("find", "Wrapping backward search to end.")
+		for lineIdx := lineCount - 1; lineIdx >= originalStartLine; lineIdx-- { // Include original line
+			lineBytes, err := buf.Line(lineIdx)
+			if err != nil {
+				continue
+			}
+
+			searchBytes := lineBytes
+			searchStartByteOffset := 0 // Default: Start from beginning
+
+			if lineIdx == originalStartLine {
+				// On the original line, only search *from or after* the original start column
+				searchStartByteOffset = runeIndexToByteOffset(lineBytes, originalStartCol)
+				if searchStartByteOffset < 0 {
+					searchStartByteOffset = 0
+				}
+				searchBytes = lineBytes[searchStartByteOffset:]
+			}
+
+			// Find matches on wrapped lines
+			var locs [][]int
+			if lineIdx == originalStartLine {
+				// Find first match after start offset
+				loc := re.FindIndex(searchBytes)
+				if loc != nil {
+					locs = [][]int{{searchStartByteOffset + loc[0], searchStartByteOffset + loc[1]}} // Adjust offset back
+				}
+			} else {
+				// Find all matches on the line (when wrapping from end)
+				locs = re.FindAllIndex(searchBytes, -1)
+			}
+
+			if len(locs) > 0 {
+				// Need the *last* match found during the wrap search from the end
+				// If on start line, take first. Otherwise take last.
+				var matchToUse []int
+				if lineIdx == originalStartLine {
+					matchToUse = locs[0]
+				} else {
+					matchToUse = locs[len(locs)-1]
+				}
+
+				matchByteOffset := matchToUse[0]
+				matchRuneCol := byteOffsetToRuneIndex(lineBytes, matchByteOffset)
+				return types.Position{Line: lineIdx, Col: matchRuneCol}, true, true // Found, wrapped
+			}
+		}
 	}
 
-	return types.Position{}, false
+	return types.Position{}, false, false // Not found, wrap status irrelevant
 }
 
 // HighlightMatches finds and stores all occurrences for highlighting.
@@ -274,10 +359,7 @@ func ParseSubstituteCommand(cmdStr string) (pattern, replacement string, global 
 }
 
 // Replace replaces occurrences on the current line.
-// For v1.0: Replaces only the FIRST occurrence on the CURRENT line by default.
-// TODO: Add global flag support.
-// TODO: Add range support.
-// TODO: Add undo support.
+// Supports global 'g' flag. Undo support is NOT implemented for this operation yet.
 func (m *Manager) Replace(patternStr, replacement string, global bool) (int, error) {
 	if patternStr == "" {
 		return 0, fmt.Errorf("search pattern cannot be empty")
@@ -292,71 +374,138 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	cursor := m.editor.GetCursor()
 	lineIdx := cursor.Line
 	eventMgr := m.editor.GetEventManager()
+	histMgr := m.editor.GetHistoryManager() // Get history manager for recording
 
-	lineBytes, err := buf.Line(lineIdx)
+	originalLineBytes, err := buf.Line(lineIdx)
 	if err != nil {
 		return 0, fmt.Errorf("cannot get current line %d: %w", lineIdx, err)
 	}
 
-	matches := re.FindAllIndex(lineBytes, -1)
+	matches := re.FindAllIndex(originalLineBytes, -1)
 	if len(matches) == 0 {
 		return 0, nil
-	} // No matches on this line
+	} // No matches
 
 	replaceCount := 0
+	var finalLine bytes.Buffer // Buffer to build the new line content
+	lastIndex := 0             // Tracks end position of last match/start position
 
-	// For now, only replace the first match on the line
-	// TODO: Implement 'g' flag and potentially start search from cursor col?
-	loc := matches[0] // Get first match
-	matchStartByte := loc[0]
-	matchEndByte := loc[1]
-	deletedText := lineBytes[matchStartByte:matchEndByte] // Text being replaced
+	// --- TODO: Add proper Undo support ---
+	// For now, global replace isn't easily undoable as one step.
+	// We could record a single large Delete+Insert, but figuring out
+	// the intermediate EditInfo for highlighting is hard.
+	// Let's skip recording Undo for global replace in v1.0.
+	canRecordUndo := !global // Only record simple undo for non-global replace
 
-	// Convert byte offsets to rune positions for buffer operations
-	matchStartPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(lineBytes, matchStartByte)}
-	matchEndPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(lineBytes, matchEndByte)}
+	var firstMatchStartPos types.Position // Cursor position after first replace
 
-	logger.DebugTagf("core", "Replace: Found match '%s' at Line %d, Col %d-%d (Bytes %d-%d)",
-		string(deletedText), lineIdx, matchStartPos.Col, matchEndPos.Col, matchStartByte, matchEndByte)
+	if global {
+		// --- Global Replace: Rebuild the line ---
+		for _, loc := range matches {
+			matchStartByte := loc[0]
+			matchEndByte := loc[1]
 
-	// --- Perform Replace (Delete + Insert) ---
-	// 1. Delete the matched text
-	editInfoDel, errDel := buf.Delete(matchStartPos, matchEndPos)
+			// Append text before the current match
+			finalLine.Write(originalLineBytes[lastIndex:matchStartByte])
+			// Append the replacement text
+			finalLine.Write([]byte(replacement))
+			// Update lastIndex to point after the current match
+			lastIndex = matchEndByte
+			replaceCount++
+		}
+		// Append any remaining text after the last match
+		finalLine.Write(originalLineBytes[lastIndex:])
+
+	} else {
+		// --- Single Replace (First Occurrence Only) ---
+		loc := matches[0]
+		matchStartByte := loc[0]
+		matchEndByte := loc[1]
+
+		// Build the new line
+		finalLine.Write(originalLineBytes[:matchStartByte])
+		finalLine.Write([]byte(replacement))
+		finalLine.Write(originalLineBytes[matchEndByte:])
+		replaceCount = 1
+
+		// Calculate start/end positions for undo/cursor
+		firstMatchStartPos = types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchStartByte)}
+		// Position after replacement (tricky if replacement has different rune count)
+		// Let's place cursor at start for now
+	}
+
+	newLineBytes := finalLine.Bytes()
+
+	// --- Apply Change to Buffer (Delete original line, Insert new line) ---
+	// Calculate start/end for deleting the whole original line
+	originalStartPos := types.Position{Line: lineIdx, Col: 0}
+	originalEndCol := utf8.RuneCount(originalLineBytes)
+	originalEndPos := types.Position{Line: lineIdx, Col: originalEndCol}
+
+	// 1. Delete original line content
+	editInfoDel, errDel := buf.Delete(originalStartPos, originalEndPos)
 	if errDel != nil {
-		return 0, fmt.Errorf("replace failed during delete: %w", errDel)
+		return replaceCount, fmt.Errorf("replace failed during line delete: %w", errDel)
 	}
 
-	// 2. Insert the replacement text
-	replacementBytes := []byte(replacement)
-	// Insert at the start position where the deletion happened
-	editInfoIns, errIns := buf.Insert(matchStartPos, replacementBytes)
+	// 2. Insert new line content
+	editInfoIns, errIns := buf.Insert(originalStartPos, newLineBytes) // Insert at {line, 0}
 	if errIns != nil {
-		return 0, fmt.Errorf("replace failed during insert: %w", errIns)
+		return replaceCount, fmt.Errorf("replace failed during line insert: %w", errIns)
 	}
 
-	replaceCount = 1 // Only replaced one for now
+	// --- Record Undo (Only for non-global for now) ---
+	if canRecordUndo && histMgr != nil {
+		loc := matches[0]
+		matchStartByte := loc[0]
+		matchEndByte := loc[1]
+		matchStartPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchStartByte)}
 
-	// --- Dispatch Events ---
-	// We need to dispatch a single event representing the NET change for highlighting.
-	// Calculate net EditInfo:
+		// Record Delete
+		histMgr.RecordChange(history.Change{
+			Type:          history.DeleteAction,
+			Text:          originalLineBytes[matchStartByte:matchEndByte],                                             // Original matched text
+			StartPosition: matchStartPos,                                                                              // Where the original match started
+			EndPosition:   types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchEndByte)}, // Where original match ended
+			CursorBefore:  cursor,                                                                                     // Cursor before the :s command
+		})
+		// Record Insert
+		histMgr.RecordChange(history.Change{
+			Type:          history.InsertAction,
+			Text:          []byte(replacement),
+			StartPosition: matchStartPos,                                                                               // Where insertion happens
+			EndPosition:   types.Position{Line: lineIdx, Col: matchStartPos.Col + utf8.RuneCountInString(replacement)}, // End of inserted text
+			CursorBefore:  matchStartPos,                                                                               // Cursor was at match start before this insert
+		})
+	}
+
+	// --- Dispatch Combined Event for Highlighting ---
 	netEditInfo := types.EditInfo{
-		StartIndex:     editInfoDel.StartIndex, // Start index is the same
+		StartIndex:     editInfoDel.StartIndex, // 0 (start of line)
 		StartPosition:  editInfoDel.StartPosition,
-		OldEndIndex:    editInfoDel.OldEndIndex, // Original end of deleted text
+		OldEndIndex:    editInfoDel.OldEndIndex, // Original end of line (bytes)
 		OldEndPosition: editInfoDel.OldEndPosition,
-		NewEndIndex:    editInfoDel.StartIndex + uint32(len(replacementBytes)), // New end after insertion
-		NewEndPosition: editInfoIns.NewEndPosition,                             // End position comes from the insert operation
+		NewEndIndex:    editInfoIns.NewEndIndex, // New end of line (bytes)
+		NewEndPosition: editInfoIns.NewEndPosition,
 	}
 	if eventMgr != nil {
 		eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: netEditInfo})
 	}
 
 	// --- Update Cursor ---
-	// Move cursor to the start of the replacement for now
-	m.editor.SetCursor(matchStartPos)
-	m.editor.ScrollToCursor()
+	// Move cursor to the start of the first replacement, or keep original if global?
+	// Let's move to start of first replacement for consistency.
+	if replaceCount > 0 && !global { // Only move for single replace now
+		m.editor.SetCursor(firstMatchStartPos)
+		m.editor.ScrollToCursor()
+	} else if replaceCount > 0 && global {
+		// Keep cursor at original line, column 0 after global replace? Or end of line?
+		// Let's keep it at the start of the line.
+		m.editor.SetCursor(types.Position{Line: lineIdx, Col: 0})
+		m.editor.ScrollToCursor()
+	}
 
-	logger.DebugTagf("core", "Replace: Replaced 1 occurrence.")
+	logger.DebugTagf("find", "Replace: Replaced %d occurrence(s). Global: %v", replaceCount, global)
 	return replaceCount, nil
 }
 

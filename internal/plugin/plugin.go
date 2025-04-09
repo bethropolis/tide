@@ -29,7 +29,7 @@ type EditorAPI interface {
 	InsertText(pos types.Position, text []byte) error
 	DeleteRange(start, end types.Position) error
 	// ReplaceRange(start, end types.Position, text []byte) error // Combine delete/insert
-	SaveBuffer() error                                             // Save buffer to file
+	SaveBuffer(filePath ...string) error                           // Save buffer to file with optional path
 	Replace(pattern, replacement string, global bool) (int, error) // Add Replace for substitution command
 
 	// --- Cursor & Viewport ---

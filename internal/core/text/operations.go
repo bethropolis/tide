@@ -8,6 +8,7 @@ import (
 	"github.com/bethropolis/tide/internal/buffer"       // Import main buffer package
 	"github.com/bethropolis/tide/internal/core/history" // Add history import
 	"github.com/bethropolis/tide/internal/event"
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
 	"github.com/bethropolis/tide/internal/utils" // Import utility package as utils
 )
@@ -85,11 +86,89 @@ func (o *Operations) InsertRune(r rune) error {
 	return nil
 }
 
-// InsertNewLine inserts a newline and scrolls
+// InsertNewLine inserts a newline and applies auto-indentation.
 func (o *Operations) InsertNewLine() error {
-	o.editor.ClearSelection() // Clear selection when typing
-	// InsertRune handles the scroll now
-	return o.InsertRune('\n')
+	o.editor.ClearSelection() // Clear selection first
+
+	cursorBefore := o.editor.GetCursor()
+	buf := o.editor.GetBuffer()
+	histMgr := o.editor.GetHistoryManager()
+	eventMgr := o.editor.GetEventManager()
+
+	// --- Get Leading Whitespace from Current Line ---
+	currentLineBytes, err := buf.Line(cursorBefore.Line)
+	if err != nil {
+		// Fallback: just insert newline if we can't get current line
+		return o.InsertRune('\n') // Fallback to simpler insert
+	}
+	leadingWhitespace := utils.GetLeadingWhitespace(currentLineBytes)
+	// --- End Get Whitespace ---
+
+	// --- 1. Insert the Newline Character ---
+	newlineBytes := []byte("\n")
+	editInfoNL, errNL := buf.Insert(cursorBefore, newlineBytes)
+	if errNL != nil {
+		return fmt.Errorf("failed to insert newline: %w", errNL)
+	}
+	// Calculate cursor position immediately after newline
+	cursorAfterNL := types.Position{Line: cursorBefore.Line + 1, Col: 0}
+
+	// Record newline insertion for Undo/Redo
+	if histMgr != nil {
+		changeNL := history.Change{
+			Type:          history.InsertAction,
+			Text:          newlineBytes,
+			StartPosition: cursorBefore,
+			EndPosition:   cursorAfterNL, // Position right after newline
+			CursorBefore:  cursorBefore,
+		}
+		histMgr.RecordChange(changeNL)
+	}
+	// Dispatch event for newline insertion
+	if eventMgr != nil {
+		eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfoNL})
+	}
+	// --- End Insert Newline ---
+
+	// --- 2. Insert Leading Whitespace (Auto Indent) ---
+	var editInfoWS types.EditInfo
+	var errWS error
+	cursorAfterWS := cursorAfterNL // Start cursor for WS insert
+
+	if len(leadingWhitespace) > 0 {
+		editInfoWS, errWS = buf.Insert(cursorAfterNL, leadingWhitespace)
+		if errWS != nil {
+			// Log error but proceed, newline was already inserted
+			logger.Warnf("Auto-indent failed during whitespace insert: %v", errWS)
+		} else {
+			// Calculate cursor position after whitespace
+			wsRuneCount := utf8.RuneCount(leadingWhitespace)
+			cursorAfterWS.Col = wsRuneCount
+
+			// Record whitespace insertion for Undo/Redo
+			if histMgr != nil {
+				changeWS := history.Change{
+					Type:          history.InsertAction,
+					Text:          leadingWhitespace,
+					StartPosition: cursorAfterNL, // Starts where newline ended
+					EndPosition:   cursorAfterWS, // Ends after whitespace
+					CursorBefore:  cursorAfterNL, // Cursor was at start of new line before this insert
+				}
+				histMgr.RecordChange(changeWS)
+			}
+			// Dispatch event for whitespace insertion
+			if eventMgr != nil {
+				eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfoWS})
+			}
+		}
+	}
+	// --- End Insert Whitespace ---
+
+	// --- Final Cursor Position and Scroll ---
+	o.editor.SetCursor(cursorAfterWS) // Set cursor after potential whitespace
+	o.editor.ScrollToCursor()
+
+	return nil // Overall success (even if whitespace insert had issues)
 }
 
 // InsertTab inserts a tab character at the current cursor position

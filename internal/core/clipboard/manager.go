@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
+	"github.com/atotto/clipboard"                       // <<< Import clipboard library
 	"github.com/bethropolis/tide/internal/buffer"       // Import the main buffer package
 	"github.com/bethropolis/tide/internal/core/history" // Add history import
 	"github.com/bethropolis/tide/internal/event"
@@ -16,8 +17,9 @@ import (
 
 // Manager handles clipboard operations
 type Manager struct {
-	editor    EditorInterface
-	clipboard []byte
+	editor             EditorInterface
+	internalClipboard  []byte // Renamed for clarity
+	useSystemClipboard bool   // <<< Add flag
 }
 
 // EditorInterface defines methods needed from editor
@@ -33,11 +35,12 @@ type EditorInterface interface {
 	GetHistoryManager() *history.Manager // Add GetHistoryManager method
 }
 
-// NewManager creates a new clipboard manager
-func NewManager(editor EditorInterface) *Manager {
+// NewManager creates a new clipboard manager, accepting the config flag
+func NewManager(editor EditorInterface, useSystem bool) *Manager { // <<< Add useSystem bool
 	return &Manager{
-		editor:    editor,
-		clipboard: nil,
+		editor:             editor,
+		internalClipboard:  nil,
+		useSystemClipboard: useSystem, // <<< Store the flag
 	}
 }
 
@@ -55,8 +58,16 @@ func (m *Manager) YankSelection() (bool, error) {
 		return false, fmt.Errorf("failed to extract selected text for yank: %w", err)
 	}
 
-	m.clipboard = content
-	logger.Debugf("ClipboardManager: Yanked %d bytes", len(m.clipboard))
+	if m.useSystemClipboard {
+		err = clipboard.WriteAll(string(content))
+		if err != nil {
+			return false, fmt.Errorf("failed to write to system clipboard: %w", err)
+		}
+		logger.Debugf("ClipboardManager: Yanked %d bytes to system clipboard", len(content))
+	} else {
+		m.internalClipboard = content
+		logger.Debugf("ClipboardManager: Yanked %d bytes to internal clipboard", len(m.internalClipboard))
+	}
 
 	// Clear selection after yank
 	m.editor.ClearSelection()
@@ -128,9 +139,23 @@ func (m *Manager) extractTextFromRange(start, end types.Position) ([]byte, error
 
 // Paste inserts clipboard content at cursor
 func (m *Manager) Paste() (bool, error) {
-	if len(m.clipboard) == 0 {
-		// Nothing in clipboard
-		return false, nil
+	var clipboardContent []byte
+	var err error
+
+	if m.useSystemClipboard {
+		content, err := clipboard.ReadAll()
+		if err != nil {
+			return false, fmt.Errorf("failed to read from system clipboard: %w", err)
+		}
+		clipboardContent = []byte(content)
+		logger.Debugf("ClipboardManager: Read %d bytes from system clipboard", len(clipboardContent))
+	} else {
+		if len(m.internalClipboard) == 0 {
+			// Nothing in clipboard
+			return false, nil
+		}
+		clipboardContent = m.internalClipboard
+		logger.Debugf("ClipboardManager: Read %d bytes from internal clipboard", len(clipboardContent))
 	}
 
 	buffer := m.editor.GetBuffer()
@@ -138,7 +163,6 @@ func (m *Manager) Paste() (bool, error) {
 	cursorBefore := m.editor.GetCursor() // Store cursor before change
 	var pastePos types.Position
 	var selectedText []byte
-	var err error
 
 	// If there's a selection, delete it first
 	if start, end, ok := m.editor.GetSelection(); ok {
@@ -176,8 +200,6 @@ func (m *Manager) Paste() (bool, error) {
 	} else {
 		pastePos = m.editor.GetCursor()
 	}
-
-	clipboardContent := m.clipboard
 
 	// Insert content
 	editInfo, err := buffer.Insert(pastePos, clipboardContent)

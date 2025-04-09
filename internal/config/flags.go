@@ -62,14 +62,14 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 		}
 		switch fl.Name {
 		case "loglevel":
-			if f.LogLevel != nil {
+			if f.LogLevel != nil && *f.LogLevel != "" {
 				if verbose {
 					logger.DebugTagf("config", "Setting log level from flag: %s", *f.LogLevel)
 				}
 				cfg.Logger.LogLevel = *f.LogLevel
 			}
 		case "logfile":
-			if f.LogFilePath != nil {
+			if f.LogFilePath != nil { // Empty string is valid ("-")
 				if verbose {
 					logger.DebugTagf("config", "Setting log file path from flag: %s", *f.LogFilePath)
 				}
@@ -97,7 +97,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Editor.SystemClipboard = *f.SystemClipboard
 			}
 		case "log-tags":
-			if f.EnableTags != nil {
+			if f.EnableTags != nil && *f.EnableTags != "" {
 				tags := splitCommaList(*f.EnableTags)
 				if verbose {
 					logger.DebugTagf("config", "Setting enabled tags from flag: %v", tags)
@@ -105,7 +105,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Logger.EnabledTags = tags
 			}
 		case "log-disable-tags":
-			if f.DisableTags != nil {
+			if f.DisableTags != nil && *f.DisableTags != "" {
 				tags := splitCommaList(*f.DisableTags)
 				if verbose {
 					logger.DebugTagf("config", "Setting disabled tags from flag: %v", tags)
@@ -113,7 +113,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Logger.DisabledTags = tags
 			}
 		case "log-packages":
-			if f.EnablePkgs != nil {
+			if f.EnablePkgs != nil && *f.EnablePkgs != "" {
 				pkgs := splitCommaList(*f.EnablePkgs)
 				if verbose {
 					logger.DebugTagf("config", "Setting enabled packages from flag: %v", pkgs)
@@ -121,7 +121,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Logger.EnabledPackages = pkgs
 			}
 		case "log-disable-packages":
-			if f.DisablePkgs != nil {
+			if f.DisablePkgs != nil && *f.DisablePkgs != "" {
 				pkgs := splitCommaList(*f.DisablePkgs)
 				if verbose {
 					logger.DebugTagf("config", "Setting disabled packages from flag: %v", pkgs)
@@ -129,7 +129,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Logger.DisabledPackages = pkgs
 			}
 		case "log-files":
-			if f.EnableFiles != nil {
+			if f.EnableFiles != nil && *f.EnableFiles != "" {
 				files := splitCommaList(*f.EnableFiles)
 				if verbose {
 					logger.DebugTagf("config", "Setting enabled files from flag: %v", files)
@@ -137,7 +137,7 @@ func (f *Flags) ApplyOverrides(cfg *Config, verbose bool) {
 				cfg.Logger.EnabledFiles = files
 			}
 		case "log-disable-files":
-			if f.DisableFiles != nil {
+			if f.DisableFiles != nil && *f.DisableFiles != "" {
 				files := splitCommaList(*f.DisableFiles)
 				if verbose {
 					logger.DebugTagf("config", "Setting disabled files from flag: %v", files)

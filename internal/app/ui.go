@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bethropolis/tide/internal/config"
+	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/modehandler"
 	"github.com/bethropolis/tide/internal/render"
 )
@@ -19,6 +21,13 @@ func (a *App) drawEditor() {
 
 	screen := a.tuiManager.GetScreen()
 	width, height := a.tuiManager.Size()
+	statusBarHeight := config.Get().Editor.StatusBarHeight
+	viewHeight := height - statusBarHeight
+
+	// --- Add Detailed Logging ---
+	logger.DebugTagf("draw", "drawEditor: Screen Size (%d x %d), StatusBarHeight: %d, Calculated ViewHeight: %d",
+		width, height, statusBarHeight, viewHeight)
+	// --- End Logging ---
 
 	a.tuiManager.Clear()
 	// Use the render package to draw the buffer

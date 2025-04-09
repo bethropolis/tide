@@ -49,6 +49,23 @@ func ByteOffsetToRuneIndex(line []byte, byteOffset int) int {
 	return runeIndex
 }
 
+// GetLeadingWhitespace returns the leading whitespace characters (spaces/tabs) from a byte slice.
+func GetLeadingWhitespace(line []byte) []byte {
+	endIndex := 0
+	for i := 0; i < len(line); {
+		r, size := utf8.DecodeRune(line[i:])
+		if r != ' ' && r != '\t' {
+			break // Stop at first non-whitespace rune
+		}
+		endIndex += size
+		i += size
+	}
+	// Return a copy to avoid modifying the original line slice indirectly
+	ws := make([]byte, endIndex)
+	copy(ws, line[:endIndex])
+	return ws
+}
+
 // Debouncer provides a way to debounce function calls
 type Debouncer struct {
 	mutex      sync.Mutex

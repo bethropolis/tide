@@ -10,6 +10,13 @@ import (
 	"github.com/bethropolis/tide/internal/logger"
 )
 
+
+var (
+	Version   = "dev" 
+	Commit    = "n/a"
+	BuildDate = "n/a"
+)
+
 func main() {
 	// 1. Define and Parse Flags
 	flags := &config.Flags{}
