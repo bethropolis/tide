@@ -38,6 +38,11 @@ jobs:
               run: mkdir -p ./dist/package
               shell: bash
 
+            - name: Set build date
+              id: build_date
+              run: echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+              shell: bash
+
             # --- Build with xgo and ldflags ---
             - name: Setup xgo for Cross-Compilation
               uses: crazy-max/ghaction-xgo@v3
@@ -52,7 +57,7 @@ jobs:
                 x: false
                 race: false
                 # Inject version info via ldflags - ensure 'main.' path is correct
-                ldflags: "-s -w -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=$(date -u +''%Y-%m-%dT%H:%M:%SZ'')'"
+                ldflags: "-s -w -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}' -X 'main.Commit=${{ github.sha }}' -X 'main.BuildDate=${{ steps.build_date.outputs.BUILD_DATE }}'"
                 buildmode: default
                 trimpath: true
 
