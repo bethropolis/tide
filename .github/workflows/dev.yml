@@ -52,7 +52,7 @@ jobs:
                 x: false
                 race: false
                 # Inject version info via ldflags - ensure 'main.' path is correct
-                ldflags: > # Use > for multi-line string
+                ldflags: | 
                   -s -w
                   -X 'main.Version=${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag_name }}'
                   -X 'main.Commit=${{ github.sha }}'

@@ -22,6 +22,11 @@ func main() {
 	flags := &config.Flags{}
 	args := flags.ParseFlags() // Parses flags and gets non-flag args
 
+	if *flags.Version {
+		printVersion()
+		os.Exit(0)
+	}
+
 	filePathArg := ""
 	if len(args) > 0 {
 		filePathArg = args[0] // File to open is the first non-flag arg
@@ -86,4 +91,12 @@ func main() {
 
 	logger.Infof("Tide editor finished.")
 	os.Exit(0) // Explicit exit
+}
+
+
+func printVersion() {
+	fmt.Printf("Tide Editor\n")
+	fmt.Printf(" Version:   %s\n", Version)
+	fmt.Printf(" Commit:    %s\n", Commit)
+	fmt.Printf(" Built:     %s\n", BuildDate)
 }

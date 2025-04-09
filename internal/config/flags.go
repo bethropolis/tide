@@ -13,6 +13,7 @@ import (
 // Use pointers to distinguish between unset flags and zero-value flags.
 type Flags struct {
 	ConfigFilePath *string
+	Version 	   *bool
 	LogLevel       *string
 	LogFilePath    *string
 	TabWidth       *int
@@ -31,6 +32,7 @@ type Flags struct {
 // DefineFlags sets up the command-line flags and associates them with the Flags struct fields.
 func (f *Flags) DefineFlags() {
 	f.ConfigFilePath = flag.String("config", "", fmt.Sprintf("Path to TOML configuration file (default ~/.config/%s/%s)", AppName, DefaultConfigFileName))
+	f.Version = flag.Bool("version", false, "Show version information and exit")
 	f.LogLevel = flag.String("loglevel", "", "Log level (debug, info, warn, error) - Overrides config file")
 	f.LogFilePath = flag.String("logfile", "", "Path to write log file (use '-' for stderr) - Overrides config file")
 	f.TabWidth = flag.Int("tabwidth", 0, "Number of spaces per tab - Overrides config file")               // Use 0 to indicate unset
