@@ -25,7 +25,7 @@ type Editor struct {
 	buffer     buffer.Buffer
 	viewWidth  int // Cached terminal width
 	viewHeight int // Cached terminal height (excluding status bar)
-	ScrollOff  int // Number of lines to keep visible above/below cursor
+	scrollOff  int // Number of lines to keep visible above/below cursor
 
 	// Event Manager
 	eventManager *event.Manager // Added for dispatching events on delete etc.
@@ -49,7 +49,7 @@ type Editor struct {
 func NewEditor(buf buffer.Buffer) *Editor {
 	e := &Editor{
 		buffer:           buf,
-		ScrollOff:        config.DefaultScrollOff,
+		scrollOff:        config.Get().Editor.ScrollOff,
 		syntaxHighlights: make(hl.HighlightResult),
 		syntaxTree:       nil,
 		highlightMutex:   sync.RWMutex{},
@@ -63,7 +63,7 @@ func NewEditor(buf buffer.Buffer) *Editor {
 	e.historyManager = history.NewManager(e, history.DefaultMaxHistory) // Initialize history manager
 	e.findManager = find.NewManager(e)                                  // Initialize find manager
 
-	logger.Debugf("Editor created and managers initialized.")
+	logger.DebugTagf("core", "Editor created and managers initialized.")
 	return e
 }
 
@@ -215,7 +215,7 @@ func (e *Editor) UpdateSyntaxHighlights(newHighlights hl.HighlightResult, newTre
 
 // TriggerSyntaxHighlight triggers a highlight operation
 func (e *Editor) TriggerSyntaxHighlight() {
-	logger.Debugf("Editor: TriggerSyntaxHighlight called (handled by app manager)")
+	logger.DebugTagf("core", "Editor: TriggerSyntaxHighlight called (handled by app manager)")
 }
 
 // SetViewSize updates the view dimensions
@@ -224,8 +224,8 @@ func (e *Editor) SetViewSize(width, height int) {
 
 	// Calculate the usable height (excluding status bar)
 	adjustedHeight := height
-	if adjustedHeight > config.StatusBarHeight {
-		adjustedHeight -= config.StatusBarHeight
+	if adjustedHeight > config.Get().Editor.StatusBarHeight {
+		adjustedHeight -= config.Get().Editor.StatusBarHeight
 	} else {
 		adjustedHeight = 0
 	}
@@ -291,4 +291,9 @@ func (e *Editor) GetCurrentSearchHighlights() []types.HighlightRegion {
 // GetFindManager provides direct access to the find manager
 func (e *Editor) GetFindManager() *find.Manager {
 	return e.findManager
+}
+
+// ScrollOff returns the scrolloff setting (lines to keep visible above/below cursor)
+func (e *Editor) ScrollOff() int {
+	return e.scrollOff
 }

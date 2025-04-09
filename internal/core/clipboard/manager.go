@@ -10,7 +10,8 @@ import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
-	"github.com/rivo/uniseg"
+	"github.com/bethropolis/tide/internal/utils" // Import utility package as utils
+	// Import for grapheme cluster support
 )
 
 // Manager handles clipboard operations
@@ -75,37 +76,16 @@ func (m *Manager) extractTextFromRange(start, end types.Position) ([]byte, error
 			return nil, fmt.Errorf("cannot get line %d: %w", start.Line, err)
 		}
 
-		// Convert to string for grapheme cluster analysis
-		lineStr := string(lineBytes)
-		gr := uniseg.NewGraphemes(lineStr)
-
-		// Track byte offsets
-		startByteOffset := 0
-		endByteOffset := 0
-		currentCol := 0
-		currentByteOffset := 0
-
-		// Iterate grapheme clusters to find start/end byte positions
-		for gr.Next() {
-			if currentCol == start.Col {
-				startByteOffset = currentByteOffset
-			}
-			if currentCol == end.Col {
-				endByteOffset = currentByteOffset
-				break
-			}
-			currentCol++
-			currentByteOffset += len(gr.Bytes())
-		}
-
-		// If we didn't find the end position, it might be at EOL
-		if currentCol < end.Col && end.Col <= utf8.RuneCountInString(lineStr) {
-			endByteOffset = len(lineBytes)
-		}
+		// Convert rune indices to byte indices using utilities
+		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
 
 		// Make sure indices are valid
-		if startByteOffset <= len(lineBytes) && endByteOffset <= len(lineBytes) && startByteOffset <= endByteOffset {
+		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset <= endByteOffset && endByteOffset <= len(lineBytes) {
 			content.Write(lineBytes[startByteOffset:endByteOffset])
+		} else {
+			return nil, fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, cols %d-%d",
+				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
 		}
 		return content.Bytes(), nil
 	}
@@ -117,42 +97,27 @@ func (m *Manager) extractTextFromRange(start, end types.Position) ([]byte, error
 			return nil, fmt.Errorf("cannot get line %d: %w", lineIdx, err)
 		}
 
-		// Convert to string for grapheme analysis
-		lineStr := string(lineBytes)
-
 		if lineIdx == start.Line {
 			// First line - from start.Col to end of line
-			gr := uniseg.NewGraphemes(lineStr)
-			startByteOffset := 0
-			currentCol := 0
-
-			// Find start byte offset
-			for gr.Next() && currentCol < start.Col {
-				currentCol++
-				startByteOffset += len(gr.Bytes())
-			}
-
-			if startByteOffset <= len(lineBytes) {
+			startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+			if startByteOffset >= 0 && startByteOffset <= len(lineBytes) {
 				content.Write(lineBytes[startByteOffset:])
+				content.WriteByte('\n') // Add newline after first line
+			} else {
+				return nil, fmt.Errorf("invalid start byte offset %d for line %d, col %d",
+					startByteOffset, start.Line, start.Col)
 			}
-			content.WriteByte('\n') // Add newline
 		} else if lineIdx == end.Line {
 			// Last line - from beginning to end.Col
-			gr := uniseg.NewGraphemes(lineStr)
-			endByteOffset := 0
-			currentCol := 0
-
-			// Find end byte offset
-			for gr.Next() && currentCol < end.Col {
-				currentCol++
-				endByteOffset += len(gr.Bytes())
-			}
-
-			if endByteOffset <= len(lineBytes) {
+			endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
+			if endByteOffset >= 0 && endByteOffset <= len(lineBytes) {
 				content.Write(lineBytes[:endByteOffset])
+			} else {
+				return nil, fmt.Errorf("invalid end byte offset %d for line %d, col %d",
+					endByteOffset, end.Line, end.Col)
 			}
 		} else {
-			// Middle lines - entire line
+			// Middle lines - entire line plus newline
 			content.Write(lineBytes)
 			content.WriteByte('\n')
 		}

@@ -214,7 +214,7 @@ func (m *Manager) HighlightMatches(term string) error {
 		}
 	}
 	m.searchHighlights = newHighlights // Assign new highlights
-	logger.Debugf("FindManager: Added %d search highlights for '%s'", len(m.searchHighlights), term)
+	logger.DebugTagf("core", "FindManager: Added %d search highlights for '%s'", len(m.searchHighlights), term)
 	return nil
 }
 
@@ -223,7 +223,7 @@ func (m *Manager) ClearHighlights() {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	if len(m.searchHighlights) > 0 {
-		logger.Debugf("FindManager: Clearing %d search highlights", len(m.searchHighlights))
+		logger.DebugTagf("core", "FindManager: Clearing %d search highlights", len(m.searchHighlights))
 		m.searchHighlights = make([]types.HighlightRegion, 0) // Clear slice
 	}
 }
@@ -316,7 +316,7 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	matchStartPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(lineBytes, matchStartByte)}
 	matchEndPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(lineBytes, matchEndByte)}
 
-	logger.Debugf("Replace: Found match '%s' at Line %d, Col %d-%d (Bytes %d-%d)",
+	logger.DebugTagf("core", "Replace: Found match '%s' at Line %d, Col %d-%d (Bytes %d-%d)",
 		string(deletedText), lineIdx, matchStartPos.Col, matchEndPos.Col, matchStartByte, matchEndByte)
 
 	// --- Perform Replace (Delete + Insert) ---
@@ -356,7 +356,7 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	m.editor.SetCursor(matchStartPos)
 	m.editor.ScrollToCursor()
 
-	logger.Debugf("Replace: Replaced 1 occurrence.")
+	logger.DebugTagf("core", "Replace: Replaced 1 occurrence.")
 	return replaceCount, nil
 }
 

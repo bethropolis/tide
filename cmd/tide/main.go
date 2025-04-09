@@ -2,82 +2,60 @@
 package main
 
 import (
-	"flag"
+	"fmt" // Keep fmt for error printing
 	"os"
-	"strings"
 
 	"github.com/bethropolis/tide/internal/app"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/logger"
 )
 
-var (
-	logFilePathFlag  string
-	logLevelFlag     string
-	filePathArg      string
-	enableTagsFlag   string
-	disableTagsFlag  string
-	enablePkgsFlag   string
-	disablePkgsFlag  string
-	enableFilesFlag  string
-	disableFilesFlag string
-)
-
 func main() {
-	// --- Define Flags ---
-	flag.StringVar(&logLevelFlag, "loglevel", "info", "Log level (debug, info, warn, error)")
-	flag.StringVar(&logFilePathFlag, "logfile", "", "Path to write log file (use '-' for stderr)")
-	flag.StringVar(&enableTagsFlag, "log-tags", "", "Comma-separated list of tags to enable")
-	flag.StringVar(&disableTagsFlag, "log-disable-tags", "", "Comma-separated list of tags to disable")
-	flag.StringVar(&enablePkgsFlag, "log-packages", "", "Comma-separated list of packages to enable")
-	flag.StringVar(&disablePkgsFlag, "log-disable-packages", "", "Comma-separated list of packages to disable")
-	flag.StringVar(&enableFilesFlag, "log-files", "", "Comma-separated list of files to enable")
-	flag.StringVar(&disableFilesFlag, "log-disable-files", "", "Comma-separated list of files to disable")
+	// 1. Define and Parse Flags
+	flags := &config.Flags{}
+	args := flags.ParseFlags() // Parses flags and gets non-flag args
 
-	// Add debug flag
-	var debugLogFlag bool
-	flag.BoolVar(&debugLogFlag, "debug-log", false, "Enable debug logging for the logger system")
-
-	// --- Parse Flags and Arguments ---
-	flag.Parse()
-
-	if flag.NArg() > 0 {
-		filePathArg = flag.Arg(0)
+	filePathArg := ""
+	if len(args) > 0 {
+		filePathArg = args[0] // File to open is the first non-flag arg
 	}
 
-	// --- Create Logger Config ---
-	logConfig := logger.Config{
-		LogLevel:         logLevelFlag,
-		LogFilePath:      logFilePathFlag,
-		EnabledTags:      splitCommaList(enableTagsFlag),
-		DisabledTags:     splitCommaList(disableTagsFlag),
-		EnabledPackages:  splitCommaList(enablePkgsFlag),
-		DisabledPackages: splitCommaList(disablePkgsFlag),
-		EnabledFiles:     splitCommaList(enableFilesFlag),
-		DisabledFiles:    splitCommaList(disableFilesFlag),
+	// 2. Load Configuration (Defaults -> File -> Flag Overrides)
+	// Pass the flag struct pointer so LoadConfig can apply overrides
+	cfg, loadErr := config.LoadConfig(*flags.ConfigFilePath, flags)
+	if loadErr != nil {
+		// Log warning about file load error, but continue with defaults/flags
+		// Need a temporary logger setup or print directly
+		fmt.Fprintf(os.Stderr, "WARN: Error loading config file: %v\n", loadErr)
 	}
 
-	// Initialize logger with the config
-	logger.Init(logConfig)
+	// 3. Initialize Logger (using the final loaded config)
+	logger.Init(cfg.Logger)
 
 	// Enable filter debugging if requested
-	logger.EnableFilterDebug(debugLogFlag)
+	if flags.DebugLog != nil && *flags.DebugLog {
+		logger.EnableFilterDebug(true)
+	}
 
-	// enable debug filter if specified
-	if logLevelFlag == "filter" {
+	// Special case for "filter" log level
+	if cfg.Logger.LogLevel == "filter" {
 		logger.EnableFilterDebug(true)
 		logger.Debugf("Debug filter enabled.")
 	}
 
-	// --- Log Startup Info ---
+	// --- Now use the logger ---
 	logger.Infof("Starting Tide editor...")
-	logger.DebugTagf("config", "Effective Log level set to: %s", logConfig.LogLevel)
-	logger.DebugTagf("config", "Effective Log file: %s", logConfig.LogFilePath)
+	logger.DebugTagf("config", "Effective Log level set to: %s", cfg.Logger.LogLevel)
+	logger.DebugTagf("config", "Effective Log file: %s", cfg.Logger.LogFilePath)
+	logger.DebugTagf("config", "Tab Width: %d", cfg.Editor.TabWidth)
+	logger.DebugTagf("config", "Scroll Off: %d", cfg.Editor.ScrollOff)
+	logger.DebugTagf("config", "System Clipboard: %v", cfg.Editor.SystemClipboard)
 
-	if len(logConfig.DisabledPackages) > 0 {
-		logger.DebugTagf("filter", "Disabled Packages: %v", logConfig.DisabledPackages)
+	if len(cfg.Logger.DisabledPackages) > 0 {
+		logger.DebugTagf("filter", "Disabled Packages: %v", cfg.Logger.DisabledPackages)
 	}
-	if len(logConfig.EnabledPackages) > 0 {
-		logger.DebugTagf("filter", "Enabled Packages: %v", logConfig.EnabledPackages)
+	if len(cfg.Logger.EnabledPackages) > 0 {
+		logger.DebugTagf("filter", "Enabled Packages: %v", cfg.Logger.EnabledPackages)
 	}
 
 	if filePathArg != "" {
@@ -87,30 +65,18 @@ func main() {
 	}
 
 	// --- Create and Run App ---
-	tideApp, err := app.NewApp(filePathArg)
+	// Define an app.Config struct if needed
+	appConfig := filePathArg // Currently just passing filepath, but could expand to a struct
+
+	tideApp, err := app.NewApp(appConfig)
 	if err != nil {
-		logger.Errorf("Error initializing application: %v", err)
-		os.Exit(1)
+		logger.Fatalf("Error initializing application: %v", err) // Use Fatalf
 	}
 
 	if err := tideApp.Run(); err != nil {
-		logger.Errorf("Application exited with error: %v", err)
-		os.Exit(1)
+		logger.Fatalf("Application exited with error: %v", err) // Use Fatalf
 	}
 
 	logger.Infof("Tide editor finished.")
-	os.Exit(0)
-}
-
-// Helper function to split comma-separated list
-func splitCommaList(list string) []string {
-	if list == "" {
-		return nil
-	}
-	items := strings.Split(list, ",")
-	// Trim spaces from each item
-	for i, item := range items {
-		items[i] = strings.TrimSpace(item)
-	}
-	return items
+	os.Exit(0) // Explicit exit
 }

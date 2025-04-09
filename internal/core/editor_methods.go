@@ -25,6 +25,14 @@ func (e *Editor) InsertNewLine() error {
 	return e.textOps.InsertNewLine()
 }
 
+func (e *Editor) InsertTab() error {
+	if e.textOps == nil {
+		logger.Warnf("Editor.InsertTab: textOps manager is nil")
+		return nil
+	}
+	return e.textOps.InsertTab()
+}
+
 func (e *Editor) DeleteBackward() error {
 	if e.textOps == nil {
 		logger.Warnf("Editor.DeleteBackward: textOps manager is nil")
@@ -72,7 +80,7 @@ func (e *Editor) MoveCursor(deltaLine, deltaCol int) {
 		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("MoveCursor: Delta(%d,%d) → NewCursor(%d,%d)",
+	logger.DebugTagf("core", "MoveCursor: Delta(%d,%d) → NewCursor(%d,%d)",
 		deltaLine, deltaCol, e.GetCursor().Line, e.GetCursor().Col)
 }
 
@@ -89,7 +97,7 @@ func (e *Editor) PageMove(deltaPages int) {
 		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("PageMove: Delta(%d) → NewCursor(%d,%d)",
+	logger.DebugTagf("core", "PageMove: Delta(%d) → NewCursor(%d,%d)",
 		deltaPages, e.GetCursor().Line, e.GetCursor().Col)
 }
 
@@ -106,7 +114,7 @@ func (e *Editor) Home() {
 		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("Home: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
+	logger.DebugTagf("core", "Home: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
 }
 
 func (e *Editor) End() {
@@ -122,7 +130,7 @@ func (e *Editor) End() {
 		e.selectionManager.UpdateSelectionEnd()
 	}
 
-	logger.Debugf("End: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
+	logger.DebugTagf("core", "End: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
 }
 
 // Find operations delegated to findManager

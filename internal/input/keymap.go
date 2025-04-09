@@ -56,6 +56,7 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.keymap[tcell.KeyPgDn] = ActionMovePageDown
 	p.keymap[tcell.KeyHome] = ActionMoveHome
 	p.keymap[tcell.KeyEnd] = ActionMoveEnd
+	p.keymap[tcell.KeyTab] = ActionInsertTab // Add Tab key support
 	// p.keymap[tcell.KeyEnter] = ActionInsertNewLine // Enter is handled differently by mode now
 	p.keymap[tcell.KeyBackspace] = ActionDeleteCharBackward
 	p.keymap[tcell.KeyBackspace2] = ActionDeleteCharBackward // Often used for Backspace

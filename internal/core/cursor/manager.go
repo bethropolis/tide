@@ -1,41 +1,45 @@
 package cursor
 
 import (
-	"unicode/utf8"
-
-	"github.com/bethropolis/tide/internal/buffer" // Import main buffer package
+	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
-	"github.com/rivo/uniseg"
 )
 
-// Manager handles cursor movement and viewport scrolling
-type Manager struct {
-	editor     EditorInterface
-	position   types.Position
-	viewportY  int // Top visible line
-	viewportX  int // Leftmost visible rune index
-	viewWidth  int // Terminal width
-	viewHeight int // Terminal height (minus status bar)
-	scrollOff  int // Lines to keep visible around cursor
+// Editor is the interface cursor manager expects from the editor
+type Editor interface {
+	GetBuffer() buffer.Buffer
+	ScrollOff() int
 }
 
-// EditorInterface defines methods the cursor manager needs from the editor
-type EditorInterface interface {
-	GetBuffer() buffer.Buffer // Changed return type to concrete buffer.Buffer
-	
+// Manager handles cursor positioning and viewport management
+type Manager struct {
+	editor      Editor
+	position    types.Position
+	viewportTop int
+	viewWidth   int
+	viewHeight  int
 }
 
 // NewManager creates a new cursor manager
-func NewManager(editor EditorInterface) *Manager {
+func NewManager(editor Editor) *Manager {
 	return &Manager{
-		editor:    editor,
-		position:  types.Position{Line: 0, Col: 0},
-		viewportY: 0,
-		viewportX: 0,
-		scrollOff: config.DefaultScrollOff,
+		editor:      editor,
+		position:    types.Position{Line: 0, Col: 0},
+		viewportTop: 0,
 	}
+}
+
+// SetViewSize updates the view dimensions
+func (m *Manager) SetViewSize(width, height int) {
+	m.viewWidth = width
+	m.viewHeight = height
+}
+
+// GetViewport returns the current viewport top line and height
+func (m *Manager) GetViewport() (int, int) {
+	return m.viewportTop, m.viewHeight
 }
 
 // GetPosition returns the current cursor position
@@ -43,267 +47,203 @@ func (m *Manager) GetPosition() types.Position {
 	return m.position
 }
 
-// SetPosition sets the cursor position with bounds checking
+// SetPosition sets the cursor position
 func (m *Manager) SetPosition(pos types.Position) {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		logger.Warnf("CursorManager.SetPosition: Buffer is nil")
+		return
+	}
+
+	// Clamp to valid line range
+	lineCount := buf.LineCount()
+	if pos.Line < 0 {
+		pos.Line = 0
+	}
+	if pos.Line >= lineCount {
+		pos.Line = lineCount - 1
+	}
+
+	// Clamp to valid column range
+	if pos.Col < 0 {
+		pos.Col = 0
+	}
+
+	lineBytes, err := buf.Line(pos.Line)
+	if err != nil {
+		logger.Warnf("CursorManager.SetPosition: Failed to get line %d: %v", pos.Line, err)
+		return
+	}
+
+	// Convert []byte to string for processing
+	line := string(lineBytes)
+
+	// Get visual line length (considering tabs)
+	visualLen := GetVisualLineLength(line, config.Get().Editor.TabWidth)
+	if pos.Col > visualLen {
+		pos.Col = visualLen
+	}
+
 	m.position = pos
-	m.Move(0, 0) // Use Move to handle clamping
-}
-
-// GetViewport returns the viewport position
-func (m *Manager) GetViewport() (int, int) {
-	return m.viewportY, m.viewportX
-}
-
-// SetViewSize updates the viewport dimensions
-func (m *Manager) SetViewSize(width, height int) {
-	m.viewWidth = width
-	if height > config.StatusBarHeight {
-		m.viewHeight = height - config.StatusBarHeight
-	} else {
-		m.viewHeight = 0
-	}
-
-	// Adjust scrolloff if needed
-	if m.scrollOff*2 >= m.viewHeight && m.viewHeight > 0 {
-		m.scrollOff = (m.viewHeight - 1) / 2
-	} else if m.viewHeight <= 0 {
-		m.scrollOff = 0
-	}
-
 	m.ScrollToCursor()
 }
 
-// Move moves the cursor with boundary checks
+// MoveCursor moves the cursor by the given delta
+func (m *Manager) MoveCursor(deltaLine, deltaCol int) {
+	newPos := types.Position{
+		Line: m.position.Line + deltaLine,
+		Col:  m.position.Col + deltaCol,
+	}
+	m.SetPosition(newPos)
+}
+
+// Move moves the cursor by the given delta
+// This is an alias for MoveCursor to maintain API compatibility
 func (m *Manager) Move(deltaLine, deltaCol int) {
-	currentLine := m.position.Line
-	currentCol := m.position.Col
-	buffer := m.editor.GetBuffer()
-	lineCount := buffer.LineCount()
+	m.MoveCursor(deltaLine, deltaCol)
+}
 
-	// --- Handle Horizontal Wrap-Around FIRST ---
-	// If deltaLine is non-zero, we are moving vertically, wrap doesn't apply here.
-	if deltaLine == 0 && lineCount > 0 {
-		if deltaCol > 0 { // Attempting to move Right
-			lineBytes, err := buffer.Line(currentLine)
-			// Only wrap if we successfully read the current line
-			if err == nil {
-				maxCol := utf8.RuneCount(lineBytes)
-				if currentCol >= maxCol && currentLine < lineCount-1 { // At or past EOL and not on the last line
-					m.position.Line++  // Move to next line
-					m.position.Col = 0 // Move to beginning of that line
-					m.ScrollToCursor()
-					return // Wrap handled
-				}
-			}
-		} else if deltaCol < 0 { // Attempting to move Left
-			// No need to read line content for BOL check
-			if currentCol <= 0 && currentLine > 0 { // At or before BOL and not on the first line
-				m.position.Line-- // Move to previous line
-				// Now read the previous line to find its end
-				prevLineBytes, err := buffer.Line(m.position.Line)
-				if err == nil {
-					m.position.Col = utf8.RuneCount(prevLineBytes) // Move to end of that line
-				} else {
-					m.position.Col = 0 // Fallback if error reading prev line
-				}
-				m.ScrollToCursor()
-				return // Wrap handled
-			}
+// PageMove moves the cursor by the given number of pages
+func (m *Manager) PageMove(deltaPages int) {
+	if m.viewHeight <= 0 {
+		return // View not initialized
+	}
+
+	// Move cursor by viewHeight * deltaPages
+	linesToMove := deltaPages * m.viewHeight
+	m.MoveCursor(linesToMove, 0)
+}
+
+// MoveToStartOfLine moves the cursor to the first non-whitespace character
+func (m *Manager) MoveToStartOfLine() {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		return
+	}
+
+	lineBytes, err := buf.Line(m.position.Line)
+	if err != nil {
+		return
+	}
+
+	// Convert []byte to string for processing
+	line := string(lineBytes)
+
+	// Find first non-whitespace character
+	firstNonWS := 0
+	for i, ch := range line {
+		if ch != ' ' && ch != '\t' {
+			firstNonWS = i
+			break
 		}
 	}
 
-	// --- Default Movement & Clamping (if wrap didn't happen or wasn't applicable) ---
-	targetLine := currentLine + deltaLine
-	targetCol := currentCol + deltaCol // Calculate potential column based on current
+	m.SetPosition(types.Position{Line: m.position.Line, Col: firstNonWS})
+}
 
-	// Clamp targetLine vertically
-	if targetLine < 0 {
-		targetLine = 0
-	}
-	if lineCount == 0 {
-		targetLine = 0 // Should only be line 0 if buffer isn't empty per convention
-	} else if targetLine >= lineCount {
-		targetLine = lineCount - 1
-	}
+// MoveToLineStart moves the cursor to the start of the current line
+// This is an alias for MoveToStartOfLine to maintain API compatibility
+func (m *Manager) MoveToLineStart() {
+	m.MoveToStartOfLine()
+}
 
-	// Clamp targetCol horizontally based on the *target* line's content
-	if targetCol < 0 {
-		targetCol = 0
-	}
-	if lineCount > 0 {
-		targetLineBytes, err := buffer.Line(targetLine)
-		if err == nil {
-			maxCol := utf8.RuneCount(targetLineBytes)
-			// If moving vertically (deltaLine != 0), ensure Col doesn't exceed maxCol of new line
-			// If moving horizontally (deltaCol != 0), only clamp if targetCol goes beyond maxCol
-			if targetCol > maxCol {
-				targetCol = maxCol
-			}
-		} else {
-			// Error fetching target line's content, reset column
-			targetCol = 0
-		}
-	} else {
-		targetCol = 0 // No lines in buffer
+// MoveToEndOfLine moves the cursor to the end of the current line
+func (m *Manager) MoveToEndOfLine() {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		return
 	}
 
-	// Assign final clamped position
-	m.position.Line = targetLine
-	m.position.Col = targetCol
+	lineBytes, err := buf.Line(m.position.Line)
+	if err != nil {
+		return
+	}
 
-	// Ensure cursor is visible after move/clamp
-	m.ScrollToCursor()
+	// Convert []byte to string for processing
+	line := string(lineBytes)
+
+	visualLen := GetVisualLineLength(line, config.Get().Editor.TabWidth)
+	m.SetPosition(types.Position{Line: m.position.Line, Col: visualLen})
+}
+
+// MoveToLineEnd moves the cursor to the end of the current line
+// This is an alias for MoveToEndOfLine to maintain API compatibility
+func (m *Manager) MoveToLineEnd() {
+	m.MoveToEndOfLine()
+}
+
+// GetVisualCol translates a buffer column position to a visual column position,
+// accounting for tab characters.
+func (m *Manager) GetVisualCol(line string, col int) int {
+	return GetVisualCol(line, col, config.Get().Editor.TabWidth)
+}
+
+// GetBufferCol translates a visual column position to a buffer column position,
+// accounting for tab characters.
+func (m *Manager) GetBufferCol(line string, visualCol int) int {
+	return GetBufferCol(line, visualCol, config.Get().Editor.TabWidth)
 }
 
 // ScrollToCursor ensures the cursor is visible in the viewport
 func (m *Manager) ScrollToCursor() {
-	if m.viewHeight <= 0 || m.viewWidth <= 0 {
-		logger.Debugf("ScrollToCursor: View has no dimensions (%dx%d), skipping", m.viewWidth, m.viewHeight)
-		return // Cannot scroll if view has no dimensions
-	}
-
-	// Effective scrolloff (cannot be larger than half the view height)
-	effectiveScrollOff := m.scrollOff
-	if effectiveScrollOff*2 >= m.viewHeight {
-		if m.viewHeight > 0 {
-			effectiveScrollOff = (m.viewHeight - 1) / 2 // Max half the height
-		} else {
-			effectiveScrollOff = 0
-		}
-	}
-
-	// Store original viewport position for logging
-	oldViewportY, oldViewportX := m.viewportY, m.viewportX
-
-	// Vertical scrolling with scrolloff
-	if m.position.Line < m.viewportY+effectiveScrollOff {
-		// Cursor is within scrolloff distance from the top edge (or above)
-		m.viewportY = m.position.Line - effectiveScrollOff
-		if m.viewportY < 0 {
-			m.viewportY = 0 // Don't scroll past the beginning of the file
-		}
-	} else if m.position.Line >= m.viewportY+m.viewHeight-effectiveScrollOff {
-		// Cursor is within scrolloff distance from the bottom edge (or below)
-		m.viewportY = m.position.Line - m.viewHeight + 1 + effectiveScrollOff
-	}
-
-	// --- Horizontal Scrolling (based on visual column) ---
-	buffer := m.editor.GetBuffer()
-	lineBytes, err := buffer.Line(m.position.Line)
-	cursorVisualCol := 0
-	if err == nil {
-		cursorVisualCol = CalculateVisualColumn(lineBytes, m.position.Col)
-	} else {
-		logger.Debugf("ScrollToCursor: Error getting line %d: %v", m.position.Line, err)
-		// Fallback if line fetch fails
-	}
-
-	// Simple horizontal scroll (no horizontal ScrollOff for now)
-	if cursorVisualCol < m.viewportX {
-		// Cursor's visual position is left of the viewport
-		m.viewportX = cursorVisualCol
-	} else if cursorVisualCol >= m.viewportX+m.viewWidth {
-		// Cursor's visual position is right of the viewport edge
-		// We want the cursor to be *at* the last visible column,
-		// so ViewportX should be cursorVisualCol - viewWidth + 1
-		m.viewportX = cursorVisualCol - m.viewWidth + 1
-	}
-
-	// Clamp viewport origins
-	if m.viewportY < 0 {
-		m.viewportY = 0
-	}
-	if m.viewportX < 0 {
-		m.viewportX = 0
-	}
-
-	// Only log if viewport position changed
-	if m.viewportY != oldViewportY || m.viewportX != oldViewportX {
-		logger.Debugf("ScrollToCursor: Cursor(%d,%d) Viewport(%d,%d)→(%d,%d) ViewSize(%dx%d) ScrollOff(%d)",
-			m.position.Line, m.position.Col, oldViewportY, oldViewportX,
-			m.viewportY, m.viewportX, m.viewWidth, m.viewHeight, effectiveScrollOff)
-	}
-}
-
-// PageMove moves the cursor by page increments
-func (m *Manager) PageMove(deltaPages int) {
 	if m.viewHeight <= 0 {
-		return // Cannot page if view has no height
+		// View not initialized yet
+		return
 	}
 
-	buffer := m.editor.GetBuffer()
+	scrollOff := config.Get().Editor.ScrollOff
 
-	// Move cursor by viewHeight * deltaPages
-	targetLine := m.position.Line + (m.viewHeight * deltaPages)
-
-	// Clamp target line to buffer bounds
-	lineCount := buffer.LineCount()
-	if targetLine < 0 {
-		targetLine = 0
-	} else if targetLine >= lineCount {
-		targetLine = lineCount - 1
+	// Ensure cursor is visible vertically
+	if m.position.Line < m.viewportTop+scrollOff {
+		// Cursor is above the viewport plus scroll-off
+		m.viewportTop = m.position.Line - scrollOff
+		if m.viewportTop < 0 {
+			m.viewportTop = 0
+		}
+	} else if m.position.Line >= m.viewportTop+m.viewHeight-scrollOff {
+		// Cursor is below the viewport minus scroll-off
+		m.viewportTop = m.position.Line - m.viewHeight + scrollOff + 1
+		if m.viewportTop < 0 {
+			m.viewportTop = 0
+		}
 	}
-
-	// Set cursor position directly
-	m.position.Line = targetLine
-	// Try to maintain horizontal position (Col), clamping if necessary
-	m.Move(0, 0) // Use Move to handle clamping Col and scroll
-
-	// Explicitly move viewport - ScrollToCursor might not jump a full page
-	m.viewportY += (m.viewHeight * deltaPages)
-	// Clamp ViewportY after the jump
-	if m.viewportY < 0 {
-		m.viewportY = 0
-	}
-	maxViewportY := lineCount - m.viewHeight
-	if maxViewportY < 0 {
-		maxViewportY = 0
-	}
-	if m.viewportY > maxViewportY {
-		m.viewportY = maxViewportY
-	}
-
-	// Final scroll check to ensure cursor visibility *after* the jump
-	m.ScrollToCursor()
 }
 
-// MoveToLineStart moves cursor to beginning of line
-func (m *Manager) MoveToLineStart() {
-	m.position.Col = 0
-	m.ScrollToCursor() // Ensure viewport adjusts if needed
-}
-
-// MoveToLineEnd moves cursor to end of line
-func (m *Manager) MoveToLineEnd() {
-	buffer := m.editor.GetBuffer()
-	lineBytes, err := buffer.Line(m.position.Line)
-	if err != nil {
-		logger.Debugf("Error getting line %d for MoveToLineEnd: %v", m.position.Line, err)
-		m.position.Col = 0 // Fallback to beginning
-	} else {
-		m.position.Col = utf8.RuneCount(lineBytes) // Move to position *after* last rune
-	}
-	m.ScrollToCursor() // Ensure viewport adjusts
-}
-
-// CalculateVisualColumn computes screen column width
-func CalculateVisualColumn(line []byte, runeIndex int) int {
-	if runeIndex <= 0 {
-		return 0
-	}
-	str := string(line)
-	visualWidth := 0
-	currentRuneIndex := 0
-	gr := uniseg.NewGraphemes(str)
-
-	for gr.Next() {
-		if currentRuneIndex >= runeIndex {
+// GetVisualCol translates a buffer column to a visual column
+func GetVisualCol(line string, col int, tabWidth int) int {
+	visualCol := 0
+	for i, ch := range line {
+		if i >= col {
 			break
 		}
-		runes := gr.Runes()
-		width := gr.Width()
-		visualWidth += width
-		currentRuneIndex += len(runes)
+		if ch == '\t' {
+			// Move to next tab stop
+			visualCol = (visualCol/tabWidth + 1) * tabWidth
+		} else {
+			visualCol++
+		}
 	}
-	return visualWidth
+	return visualCol
+}
+
+// GetBufferCol translates a visual column to a buffer column
+func GetBufferCol(line string, visualCol int, tabWidth int) int {
+	currentVisual := 0
+	for i, ch := range line {
+		if currentVisual >= visualCol {
+			return i
+		}
+		if ch == '\t' {
+			// Move to next tab stop
+			currentVisual = (currentVisual/tabWidth + 1) * tabWidth
+		} else {
+			currentVisual++
+		}
+	}
+	return len(line) // Return end of line if visualCol is beyond line length
+}
+
+// GetVisualLineLength computes the visual length of a line
+func GetVisualLineLength(line string, tabWidth int) int {
+	return GetVisualCol(line, len(line), tabWidth)
 }

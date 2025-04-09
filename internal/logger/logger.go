@@ -264,6 +264,8 @@ func ErrorTagf(tag, format string, args ...interface{}) {
 	logAtLevelWithTag(slog.LevelError, tag, format, args...)
 }
 
+
+
 // Get retrieves the configured logger instance.
 func Get() *slog.Logger {
 	ensureInitialized() // KEEP ensureInitialized HERE in Get()

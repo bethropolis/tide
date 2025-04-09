@@ -9,6 +9,7 @@ import (
 	"github.com/bethropolis/tide/internal/core/history" // Add history import
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/types"
+	"github.com/bethropolis/tide/internal/utils" // Import utility package as utils
 )
 
 // Operations handles text insertion/deletion
@@ -91,6 +92,50 @@ func (o *Operations) InsertNewLine() error {
 	return o.InsertRune('\n')
 }
 
+// InsertTab inserts a tab character at the current cursor position
+func (o *Operations) InsertTab() error {
+	// Clear any selection when inserting a tab
+	o.editor.ClearSelection()
+
+	// Tab is just a single character ('\t')
+	runeBytes := []byte{'\t'}
+
+	cursorBefore := o.editor.GetCursor() // Store cursor before change
+	editInfo, err := o.editor.GetBuffer().Insert(cursorBefore, runeBytes)
+	if err != nil {
+		return err
+	}
+
+	// Update cursor position after insertion (move it one column to the right)
+	cursorAfter := cursorBefore
+	cursorAfter.Col++
+	o.editor.SetCursor(cursorAfter)
+
+	// Record change for undo/redo
+	histMgr := o.editor.GetHistoryManager()
+	if histMgr != nil {
+		change := history.Change{
+			Type:          history.InsertAction,
+			Text:          runeBytes,
+			StartPosition: cursorBefore,
+			EndPosition:   cursorAfter,
+			CursorBefore:  cursorBefore,
+		}
+		histMgr.RecordChange(change)
+	}
+
+	// Ensure cursor remains visible after insertion
+	o.editor.ScrollToCursor()
+
+	// Dispatch event with EditInfo
+	eventManager := o.editor.GetEventManager()
+	if eventManager != nil {
+		eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
+	}
+
+	return nil
+}
+
 // DeleteBackward deletes character before cursor
 func (o *Operations) DeleteBackward() error {
 	var editInfo types.EditInfo
@@ -145,24 +190,34 @@ func (o *Operations) DeleteBackward() error {
 	end = currentPos
 
 	if currentPos.Col > 0 {
+		// Deleting character within the current line
 		start.Col--
-		// Extract character being deleted
+
+		// Extract the exact character being deleted using byte offsets
 		lineBytes, err := o.editor.GetBuffer().Line(start.Line)
-		if err == nil && start.Col < utf8.RuneCount(lineBytes) {
-			// Find the rune at the position
-			r, _ := utf8.DecodeRune(lineBytes[utf8.RuneCountInString(string(lineBytes[:start.Col])):])
-			deletedText = make([]byte, utf8.RuneLen(r))
-			utf8.EncodeRune(deletedText, r)
+		if err != nil {
+			return fmt.Errorf("cannot get line %d: %w", start.Line, err)
+		}
+
+		// Calculate precise byte range for the single rune before cursor
+		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
+
+		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset < endByteOffset && endByteOffset <= len(lineBytes) {
+			deletedText = append([]byte{}, lineBytes[startByteOffset:endByteOffset]...)
+		} else {
+			return fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, col %d-%d",
+				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
 		}
 	} else if currentPos.Line > 0 {
+		// Deleting newline at beginning of line (joining with previous line)
 		start.Line--
 		prevLineBytes, err := o.editor.GetBuffer().Line(start.Line)
 		if err != nil {
 			return fmt.Errorf("cannot get previous line %d: %w", start.Line, err)
 		}
 		start.Col = utf8.RuneCount(prevLineBytes)
-		// When deleting at beginning of line, we're deleting a newline character
-		deletedText = []byte{'\n'}
+		deletedText = []byte{'\n'} // Always a newline character in this case
 	} else {
 		return nil // At beginning of buffer, nothing to delete
 	}
@@ -259,12 +314,15 @@ func (o *Operations) DeleteForward() error {
 		// Deleting within the current line
 		end.Col++
 
-		// Extract the character being deleted
-		if start.Col < len(lineBytes) {
-			// Find the rune at the position
-			r, _ := utf8.DecodeRune(lineBytes[utf8.RuneCountInString(string(lineBytes[:start.Col])):])
-			deletedText = make([]byte, utf8.RuneLen(r))
-			utf8.EncodeRune(deletedText, r)
+		// Extract the exact character being deleted using byte offsets
+		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
+
+		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset < endByteOffset && endByteOffset <= len(lineBytes) {
+			deletedText = append([]byte{}, lineBytes[startByteOffset:endByteOffset]...)
+		} else {
+			return fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, col %d-%d",
+				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
 		}
 	} else if start.Line < o.editor.GetBuffer().LineCount()-1 {
 		// Deleting at end of line (newline)
@@ -307,6 +365,7 @@ func (o *Operations) DeleteForward() error {
 }
 
 // extractTextFromRange gets the text content between start and end positions
+// This improved version uses ByteOffsetToRuneIndex and RuneIndexToByteOffset for accuracy
 func (o *Operations) extractTextFromRange(start, end types.Position) ([]byte, error) {
 	buf := o.editor.GetBuffer()
 	var content bytes.Buffer
@@ -319,12 +378,15 @@ func (o *Operations) extractTextFromRange(start, end types.Position) ([]byte, er
 		}
 
 		// Convert rune indices to byte indices
-		startIdx := utf8.RuneCountInString(string(lineBytes[:start.Col]))
-		endIdx := utf8.RuneCountInString(string(lineBytes[:end.Col]))
+		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
 
 		// Make sure indices are valid
-		if startIdx <= len(lineBytes) && endIdx <= len(lineBytes) && startIdx <= endIdx {
-			content.Write(lineBytes[startIdx:endIdx])
+		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset <= endByteOffset && endByteOffset <= len(lineBytes) {
+			content.Write(lineBytes[startByteOffset:endByteOffset])
+		} else {
+			return nil, fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, cols %d-%d",
+				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
 		}
 		return content.Bytes(), nil
 	}
@@ -338,19 +400,25 @@ func (o *Operations) extractTextFromRange(start, end types.Position) ([]byte, er
 
 		if lineIdx == start.Line {
 			// First line - from start.Col to end of line
-			startIdx := utf8.RuneCountInString(string(lineBytes[:start.Col]))
-			if startIdx <= len(lineBytes) {
-				content.Write(lineBytes[startIdx:])
+			startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
+			if startByteOffset >= 0 && startByteOffset <= len(lineBytes) {
+				content.Write(lineBytes[startByteOffset:])
+				content.WriteByte('\n') // Add newline after first line
+			} else {
+				return nil, fmt.Errorf("invalid start byte offset %d for line %d, col %d",
+					startByteOffset, start.Line, start.Col)
 			}
-			content.WriteByte('\n') // Add newline except for the last line
 		} else if lineIdx == end.Line {
 			// Last line - from beginning to end.Col
-			endIdx := utf8.RuneCountInString(string(lineBytes[:end.Col]))
-			if endIdx <= len(lineBytes) {
-				content.Write(lineBytes[:endIdx])
+			endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
+			if endByteOffset >= 0 && endByteOffset <= len(lineBytes) {
+				content.Write(lineBytes[:endByteOffset])
+			} else {
+				return nil, fmt.Errorf("invalid end byte offset %d for line %d, col %d",
+					endByteOffset, end.Line, end.Col)
 			}
 		} else {
-			// Middle lines - entire line
+			// Middle lines - entire line plus newline
 			content.Write(lineBytes)
 			content.WriteByte('\n')
 		}

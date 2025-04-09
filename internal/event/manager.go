@@ -31,7 +31,7 @@ func (m *Manager) Subscribe(eventType Type, handler Handler) {
 	defer m.mu.Unlock()
 
 	m.handlers[eventType] = append(m.handlers[eventType], handler)
-	logger.Debugf("Event Manager: Handler subscribed to type %v", eventType) // Debug log
+	logger.DebugTagf("event", "Event Manager: Handler subscribed to type %v", eventType) // Debug log
 }
 
 // Unsubscribe (Optional): Removes a specific handler. Requires comparing function pointers, which can be tricky.
@@ -51,11 +51,11 @@ func (m *Manager) Dispatch(eventType Type, data interface{}) {
 	m.mu.RUnlock() // Unlock after getting the slice
 
 	if !exists || len(handlers) == 0 {
-		logger.Debugf("Event Manager: No handlers for type %v", eventType) // Can be noisy
+		logger.DebugTagf("event", "Event Manager: No handlers for type %v", eventType) // Can be noisy
 		return
 	}
 
-	logger.Debugf("Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(handlers)) // Debug log
+	logger.DebugTagf("event", "Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(handlers)) // Debug log
 
 	// Call handlers. Be careful if handlers can modify the list concurrently (they shouldn't).
 	// Creating a copy prevents issues if a handler tries to unsubscribe itself during dispatch.

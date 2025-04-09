@@ -195,6 +195,17 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 		} else {
 			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
 		}
+	case input.ActionInsertTab:
+		if hasHighlights {
+			mh.editor.ClearHighlights()
+		}
+		err := mh.editor.InsertTab()
+		if err != nil {
+			logger.Debugf("Err InsertTab: %v", err)
+			actionProcessed = false
+		} else {
+			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+		}
 	case input.ActionInsertNewLine:
 		if hasHighlights {
 			mh.editor.ClearHighlights()

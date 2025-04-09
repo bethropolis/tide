@@ -74,7 +74,7 @@ func (m *Manager) GetCurrentTree() *sitter.Tree {
 
 // TriggerHighlight triggers a highlight operation
 func (m *Manager) TriggerHighlight() {
-	logger.Debugf("Highlight: TriggerHighlight called (async)")
+	logger.DebugTagf("core", "Highlight: TriggerHighlight called (async)")
 }
 
 // HighlightSearchMatches adds search highlights
@@ -90,7 +90,7 @@ func (m *Manager) HasHighlights() bool {
 // ClearHighlights removes all highlights
 func (m *Manager) ClearHighlights() {
 	if len(m.searchHighlights) > 0 {
-		logger.Debugf("Highlight: Clearing %d highlights", len(m.searchHighlights))
+		logger.DebugTagf("core", "Highlight: Clearing %d highlights", len(m.searchHighlights))
 		m.searchHighlights = m.searchHighlights[:0]
 	}
 }

@@ -137,7 +137,7 @@ func (m *Manager) Redo() (bool, error) {
 
 	// Get the next change to redo
 	changeToRedo := m.changes[m.currentIndex]
-	logger.Debugf("History: Redoing change %d (%v), Text: %q, StartPos: %v, EndPos: %v",
+	logger.DebugTagf("core", "History: Redoing change %d (%v), Text: %q, StartPos: %v, EndPos: %v",
 		m.currentIndex, changeToRedo.Type, string(changeToRedo.Text), changeToRedo.StartPosition, changeToRedo.EndPosition)
 
 	buf := m.editor.GetBuffer()

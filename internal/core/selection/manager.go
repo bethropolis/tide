@@ -65,7 +65,7 @@ func (m *Manager) GetSelection() (start types.Position, end types.Position, ok b
 // ClearSelection resets the selection state.
 func (m *Manager) ClearSelection() {
 	if m.selecting { // Only log if selection was actually active
-		logger.Debugf("Selection Manager: Cleared")
+		logger.DebugTagf("core", "Selection Manager: Cleared")
 	}
 	m.selecting = false
 	m.selectionStart = types.Position{Line: -1, Col: -1}
@@ -80,7 +80,7 @@ func (m *Manager) StartOrUpdateSelection() {
 		// If not currently selecting, start a new selection anchored here
 		m.selectionStart = currentCursor
 		m.selecting = true
-		logger.Debugf("Selection Manager: Started at %v", m.selectionStart)
+		logger.DebugTagf("core", "Selection Manager: Started at %v", m.selectionStart)
 	}
 	// Always update the end position to follow the cursor during selection movement
 	m.selectionEnd = currentCursor
@@ -92,7 +92,7 @@ func (m *Manager) UpdateSelectionEnd() {
 	if m.selecting {
 		currentCursor := m.editor.GetCursor()
 		m.selectionEnd = currentCursor
-		logger.Debugf("Selection Manager: Updated end to %v", m.selectionEnd)
+		logger.DebugTagf("core", "Selection Manager: Updated end to %v", m.selectionEnd)
 	}
 }
 

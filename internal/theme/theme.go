@@ -30,7 +30,7 @@ func (t *Theme) GetStyle(name string) tcell.Style {
 		if style, ok := t.Styles[baseName]; ok {
 			// Log only if the base name is different from the original name
 			if baseName != name {
-				logger.Debugf("Theme '%s': Style '%s' not found, using base '%s'", t.Name, name, baseName)
+				logger.DebugTagf("theme", "Theme '%s': Style '%s' not found, using base '%s'", t.Name, name, baseName)
 			}
 			return style
 		}
@@ -39,13 +39,13 @@ func (t *Theme) GetStyle(name string) tcell.Style {
 	// 3. Return "Default" style
 	if defStyle, ok := t.Styles["Default"]; ok {
 		if name != "Default" {
-			logger.Debugf("Theme '%s': Style '%s' not found, falling back to 'Default'", t.Name, name)
+			logger.DebugTagf("theme", "Theme '%s': Style '%s' not found, falling back to 'Default'", t.Name, name)
 		}
 		return defStyle
 	}
 
 	// 4. Absolute fallback
-	logger.Warnf("Theme '%s': Style '%s' and 'Default' style not found, using tcell default.", t.Name, name)
+	logger.WarnTagf("theme", "Theme '%s': Style '%s' and 'Default' style not found, using tcell default.", t.Name, name)
 	return tcell.StyleDefault
 }
 

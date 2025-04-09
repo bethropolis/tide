@@ -5,8 +5,8 @@ import (
 	"fmt"  // Import fmt
 	"math" // Import math for Log10
 
-	// Import strconv
-	// Import strings
+	// Import config for DefaultTabWidth
+	"github.com/bethropolis/tide/internal/config" // Import config for DefaultTabWidth
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/theme" // Import theme package
@@ -15,10 +15,17 @@ import (
 	"github.com/rivo/uniseg"
 )
 
-func calculateVisualColumn(line []byte, runeIndex int) int {
+func calculateVisualColumn(line []byte, runeIndex int, tabWidth int) int {
 	if runeIndex <= 0 {
 		return 0
 	}
+	if tabWidth <= 0 {
+		tabWidth = config.DefaultTabWidth // Use default if invalid
+		if tabWidth <= 0 {
+			tabWidth = 8 // Absolute fallback
+		}
+	}
+
 	str := string(line) // Convert once for iteration
 	visualWidth := 0
 	currentRuneIndex := 0
@@ -31,10 +38,17 @@ func calculateVisualColumn(line []byte, runeIndex int) int {
 		}
 		// Get the runes within this grapheme cluster
 		runes := gr.Runes()
-		// Get the cluster's visual width
-		width := gr.Width() // Use uniseg's width calculation
 
-		visualWidth += width
+		if len(runes) > 0 && runes[0] == '\t' {
+			// Tab calculation - add spaces needed to reach next tab stop
+			spacesToNextTabStop := tabWidth - (visualWidth % tabWidth)
+			visualWidth += spacesToNextTabStop
+		} else {
+			// Regular character width
+			width := gr.Width() // Use uniseg's width calculation
+			visualWidth += width
+		}
+
 		currentRuneIndex += len(runes) // Increment by the number of runes in the cluster
 	}
 
@@ -106,6 +120,12 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	}
 	textAreaWidth := width - gutterWidth
 
+	// Configurable Tab Width from config
+	tabWidth := config.DefaultTabWidth
+	if tabWidth <= 0 {
+		tabWidth = 8 // Basic fallback if config is invalid
+	}
+
 	visibleSearchHighlights := make(map[int][]types.HighlightRegion) // Renamed for clarity
 	for _, h := range highlights {
 		// Iterate over all lines in the highlight range
@@ -123,6 +143,9 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	// --- Draw Loop ---
 	for screenY := 0; screenY < viewHeight; screenY++ {
 		bufferLineIdx := screenY + viewY
+		
+		// Initialize currentStyle at the beginning of each line's processing
+		currentStyle := defaultStyle
 
 		// --- A: Fill the entire line with the theme's default style ---
 		for fillX := 0; fillX < width; fillX++ {
@@ -166,20 +189,74 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 		lineSearchHighlights := visibleSearchHighlights[bufferLineIdx]
 		lineSyntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
 
-		currentVisualX := 0
+		currentVisualX := 0 // Visual column offset on the buffer line (from col 0)
 		currentRuneIndex := 0
+
+		logger.DebugTagf("tui","Line %d: Starting draw. Content: %q", bufferLineIdx, lineStr)
 
 		for gr.Next() { // Iterate through grapheme clusters
 			clusterRunes := gr.Runes()
-			clusterWidth := gr.Width()
+			clusterWidth := gr.Width() // Visual width of this cluster
 			clusterVisualStart := currentVisualX
 			clusterVisualEnd := currentVisualX + clusterWidth
 
-			// Calculate screen X relative to text area, accounting for horizontal scroll
-			// and offset by the gutter width
+			// Position where this cluster *would* start drawing on screen
 			screenX := (clusterVisualStart - viewX) + gutterWidth
 
-			if clusterVisualEnd > viewX && clusterVisualStart < viewX+textAreaWidth {
+			// Is any part of this cluster visible within the text area?
+			visibleOnScreen := clusterVisualEnd > viewX && clusterVisualStart < viewX+textAreaWidth
+
+			if len(clusterRunes) == 0 {
+				logger.DebugTagf("tui","Line %d: Empty grapheme cluster at runeIndex %d", bufferLineIdx, currentRuneIndex)
+				continue
+			}
+
+			mainRune := clusterRunes[0]
+
+			// --- Enhanced Logging ---
+			isTab := (mainRune == '\t') // Explicitly store comparison result
+			logger.DebugTagf("tui",
+				"Line %d, RuneIdx %d, VisStart %d: Processing rune '%c' (%v). Is Tab: %t, Visible: %v",
+				bufferLineIdx, currentRuneIndex, clusterVisualStart, mainRune, mainRune, isTab, visibleOnScreen,
+			)
+			// --- End Enhanced Logging ---
+
+			if isTab { // Use the boolean variable instead of direct comparison
+				// --- Tab Expansion ---
+				spacesToDraw := tabWidth - (clusterVisualStart % tabWidth)
+				tabVisualWidthOnLine := spacesToDraw
+
+				logger.DebugTagf("tui",
+					"TAB Draw: Line %d, Rune %d, VisStart %d, ScreenX %d, Spaces %d | ViewportX %d, Gutter %d, Width %d",
+					bufferLineIdx, currentRuneIndex, clusterVisualStart, screenX, spacesToDraw,
+					viewX, gutterWidth, width,
+				)
+
+				// Draw spaces
+				drawCount := 0 // Count how many spaces we actually draw
+				tabDrawStart := screenX
+				tabDrawEnd := tabDrawStart + spacesToDraw
+
+				for drawX := tabDrawStart; drawX < tabDrawEnd; drawX++ {
+					if drawX >= gutterWidth && drawX < width {
+						tuiManager.screen.SetContent(drawX, screenY, ' ', nil, currentStyle)
+						drawCount++
+					} else {
+						// Log if we skip drawing due to clipping
+						logger.DebugTagf("tui",
+							"TAB Clip: Skipping draw at screen X=%d (Gutter=%d, Width=%d)",
+							drawX, gutterWidth, width,
+						)
+					}
+				}
+
+				logger.DebugTagf("tui","TAB Draw: Actually drew %d spaces for this tab.", drawCount)
+
+				// Advance correctly by the tab's visual width
+				currentVisualX += tabVisualWidthOnLine
+				currentRuneIndex++ // Tab is one rune
+				continue           // Skip the normal character processing
+			} else if visibleOnScreen {
 				// --- Determine Style (Syntax > Search > Selection) ---
 				currentStyle := defaultStyle // Start with default (important!)
 				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
@@ -203,41 +280,32 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 					currentStyle = selectionStyle
 				}
 
-				// --- Draw the Cluster ---
-				if screenX >= gutterWidth && screenX < width { // Check if the start of the cluster is visible
-					mainRune := clusterRunes[0]
+				// --- Draw the Cluster (for non-tab characters) ---
+				if screenX >= gutterWidth && screenX < width { // Regular character start is visible
+					// Draw the rune cluster using the determined style
 					combining := clusterRunes[1:]
-
-					if mainRune == '\t' {
-						// Basic tab expansion (replace with spaces using currentStyle BG/FG)
-						tabSpaces := 4 // Or get from config
-						// Calculate visual width to next tab stop correctly
-						visualScreenX := currentVisualX - viewX + gutterWidth
-						spacesToDraw := tabSpaces - (visualScreenX % tabSpaces)
-						for i := 0; i < spacesToDraw && screenX+i < width; i++ {
-							tuiManager.screen.SetContent(screenX+i, screenY, ' ', nil, currentStyle)
-						}
-					} else {
-						// Draw the rune cluster using the determined style
-						tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
-						// Fill remaining cells for wide characters using the determined style
-						for cw := 1; cw < clusterWidth; cw++ {
-							fillX := screenX + cw
-							if fillX < width {
-								tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
-							}
+					tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
+					// Fill remaining cells for wide characters using the determined style
+					for cw := 1; cw < clusterWidth; cw++ {
+						fillX := screenX + cw
+						if fillX < width {
+							tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
 						}
 					}
 				}
 			}
 
+			// Update state for the next cluster (ONLY if not handled by tab 'continue')
 			currentVisualX += clusterWidth
 			currentRuneIndex += len(clusterRunes)
-			// Optimization: Stop drawing if we go past the visible text area edge
+
+			// Optimization: Stop drawing if we've gone past the visible text area edge
 			if currentVisualX >= viewX+textAreaWidth {
 				break
 			}
 		}
+
+		logger.DebugTagf("tui","Line %d: Finished draw loop.", bufferLineIdx) // Log line end
 	}
 }
 
@@ -259,13 +327,19 @@ func DrawCursor(tuiManager *TUI, editor *core.Editor) {
 		gutterWidth = 0
 	} // Disable gutter if too narrow
 
+	// Configurable Tab Width
+	tabWidth := config.DefaultTabWidth
+	if tabWidth <= 0 {
+		tabWidth = 8 // Fallback
+	}
+
 	// Get current line to calculate visual offset
 	lineBytes, err := editor.GetBuffer().Line(cursor.Line)
 	cursorVisualCol := 0
 	if err == nil {
-		cursorVisualCol = calculateVisualColumn(lineBytes, cursor.Col)
+		cursorVisualCol = calculateVisualColumn(lineBytes, cursor.Col, tabWidth)
 	} else {
-		logger.Debugf("DrawCursor: Error getting line %d: %v", cursor.Line, err)
+		logger.DebugTagf("tui","DrawCursor: Error getting line %d: %v", cursor.Line, err)
 	}
 
 	// Calculate screen position based on viewport and visual column

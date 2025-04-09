@@ -53,19 +53,19 @@ func (m *Manager) AccumulateEdit(edit types.EditInfo) {
 
 	// Add edit to list
 	m.pendingEdits = append(m.pendingEdits, edit)
-	logger.Debugf("HighlightingManager: Accumulated edit: %+v", edit)
+	logger.DebugTagf("highlight","HighlightingManager: Accumulated edit: %+v", edit)
 
 	// Reset or start timer (debouncing)
 	if m.timer != nil {
 		m.timer.Reset(DebounceHighlightDuration)
-		logger.Debugf("HighlightingManager: Debounce timer reset.")
+		logger.DebugTagf("highlight","HighlightingManager: Debounce timer reset.")
 		return
 	}
 	if m.cancelFunc != nil {
 		m.cancelFunc() // Cancel previous context if timer wasn't running
 	}
 	m.pendingCtx, m.cancelFunc = context.WithCancel(context.Background())
-	logger.Debugf("HighlightingManager: Starting debounce timer (%v).", DebounceHighlightDuration)
+	logger.DebugTagf("highlight","HighlightingManager: Starting debounce timer (%v).", DebounceHighlightDuration)
 	m.timer = time.AfterFunc(DebounceHighlightDuration, m.runHighlightUpdate)
 }
 
@@ -75,13 +75,13 @@ func (m *Manager) runHighlightUpdate() {
 	m.timer = nil // Timer fired
 
 	if m.isRunning {
-		logger.Debugf("HighlightingManager: Update skipped, another highlight task is already running.")
+		logger.DebugTagf("highlight", "HighlightingManager: Update skipped, another highlight task is already running.")
 		m.mu.Unlock()
 		return
 	}
 
 	if len(m.pendingEdits) == 0 {
-		logger.Debugf("HighlightingManager: No pending edits, skipping highlight run.")
+		logger.DebugTagf("highlight","HighlightingManager: No pending edits, skipping highlight run.")
 		m.mu.Unlock()
 		return
 	}
@@ -105,14 +105,14 @@ func (m *Manager) runHighlightUpdate() {
 
 	m.mu.Unlock() // Unlock before starting goroutine
 
-	logger.Debugf("HighlightingManager: Debounce finished, starting background highlight task for %d edits...", len(editsToProcess))
+	logger.DebugTagf("highlight","HighlightingManager: Debounce finished, starting background highlight task for %d edits...", len(editsToProcess))
 
 	// --- Start Background Goroutine ---
 	go func(buf buffer.Buffer, fp string, edits []types.EditInfo, taskCtx context.Context) {
 		defer func() {
 			m.mu.Lock()
 			m.isRunning = false
-			logger.Debugf("HighlightingManager: Background highlight task finished.")
+			logger.DebugTagf("highlight","HighlightingManager: Background highlight task finished.")
 			m.mu.Unlock()
 		}()
 
@@ -129,17 +129,17 @@ func (m *Manager) runHighlightUpdate() {
 					OldEndPoint: edit.OldEndPosition,
 					NewEndPoint: edit.NewEndPosition,
 				}
-				logger.Debugf("HighlightingManager: Applying edit to tree: %+v", inputEdit)
+				logger.DebugTagf("highlight","HighlightingManager: Applying edit to tree: %+v", inputEdit)
 				oldTree.Edit(inputEdit) // APPLY EDIT TO TREE
 			}
 		} else {
-			logger.Debugf("HighlightingManager: No previous tree found, performing full parse.")
+			logger.DebugTagf("highlight","HighlightingManager: No previous tree found, performing full parse.")
 		}
 
 		// --- Get Language AND Query bytes ---
 		lang, queryBytes := m.highlighter.GetLanguage(fp) // Get both language and query
 		if lang == nil {
-			logger.Debugf("HighlightingManager: No language detected for '%s', clearing highlights.", fp)
+			logger.DebugTagf("highlight","HighlightingManager: No language detected for '%s', clearing highlights.", fp)
 			m.editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil)
 			m.appRedraw()
 			return
@@ -152,7 +152,7 @@ func (m *Manager) runHighlightUpdate() {
 		// Check for errors or cancellation
 		if err != nil {
 			if taskCtx.Err() == context.Canceled {
-				logger.Debugf("HighlightingManager: Highlight task cancelled.")
+				logger.DebugTagf("highlight","HighlightingManager: Highlight task cancelled.")
 			} else {
 				logger.Warnf("HighlightingManager: Background highlighting failed: %v", err)
 				m.editor.UpdateSyntaxHighlights(make(highlighter.HighlightResult), nil)
@@ -161,7 +161,7 @@ func (m *Manager) runHighlightUpdate() {
 			return
 		}
 
-		logger.Debugf("HighlightingManager: Background task generated %d lines of highlights.", len(newHighlights))
+		logger.DebugTagf("highlight","HighlightingManager: Background task generated %d lines of highlights.", len(newHighlights))
 		m.editor.UpdateSyntaxHighlights(newHighlights, newTree)
 		m.appRedraw()
 
@@ -173,7 +173,7 @@ func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cancelFunc != nil {
-		logger.Debugf("HighlightingManager: Shutting down, cancelling pending/running task.")
+		logger.DebugTagf("highlight","HighlightingManager: Shutting down, cancelling pending/running task.")
 		m.cancelFunc()
 		m.cancelFunc = nil
 	}
