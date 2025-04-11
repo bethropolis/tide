@@ -5,94 +5,52 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*" # Updated to match versioning pattern
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name for the release (e.g., v1.0.0)'
-        required: true
-        default: 'manual-release'
-      release_name:
-        description: 'Name of the release'
-        required: false
+    types: [closed]
+    branches:
+      - main
 
 permissions:
-    contents: write  # Required for creating releases and tags
+  contents: write # Required for creating releases and tags
 
 jobs:
-  # Auto-tag job that only runs when a PR is merged (push to main that's not from a tag)
-  auto-tag:
-    name: Create Tag on PR Merge
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
-    outputs:
-      new_tag: ${{ steps.create_tag.outputs.new_tag }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create new tag
-        id: create_tag
-        run: |
-          # Get the latest tag
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
-          echo "Latest tag: $LATEST_TAG"
-          
-          # Extract version components and increment patch version
-          VERSION=${LATEST_TAG#v}
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
-          NEW_PATCH=$((PATCH + 1))
-          NEW_TAG="v$MAJOR.$MINOR.$NEW_PATCH"
-          
-          echo "New tag: $NEW_TAG"
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-          
-          # Configure git
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
-          # Create and push tag
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
-        shell: bash
-
-  # Build job for Linux and Windows on Ubuntu runner
+  # Build job for Linux and Windows targets
   build_linux_windows:
     name: Build Linux and Windows
     runs-on: ubuntu-latest
-    needs: [auto-tag]
-    if: ${{ always() && (github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+
+      # Cache cross-compiler installations
+      - name: Cache cross-compilers
+        id: cache-cross-compilers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.apt-cross-toolchains
+          key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('scripts/setup.sh') }}
+
+      # Install cross-compilers using setup script only if cache missed
+      - name: Install cross compilers for CGO
+        if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
+        run: |
+          bash ./scripts/setup.sh
+        shell: bash
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '>=1.21'
+          go-version: ">=1.21"
           check-latest: true
 
-      # Install cross-compilers for CGO support
-      - name: Install cross compilers for CGO
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc \
-            gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            gcc-mingw-w64-x86-64
-        shell: bash
-
-      # Cache Go modules - improved path and ordering
+      # Cache Go modules - moved after Go is set up but before any go commands
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
@@ -103,91 +61,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # Download dependencies first
+      # Download dependencies first (separate step to ensure they're downloaded before cache is used)
       - name: Download Go modules
         run: go mod download
         shell: bash
 
-      - name: Set build date
-        id: build_date
+      # Set environment variables
+      - name: Setup environment
         run: |
-          # Calculate build date upfront to avoid shell expansion issues in ldflags
-          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
-          echo "Using build date: ${BUILD_DATE}"
-        shell: bash
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
 
-      - name: Set version information
-        id: version_info
-        run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            # Tag push
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # Auto-tagged from PR merge
-            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # Manual dispatch
-            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            # Pull request
-            echo "VERSION=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-
-      # Run GoReleaser for Linux and Windows
-      - name: Run GoReleaser (Linux and Windows)
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          version: v1.35.2  # Ensure we use a version that supports --only flag
-          args: release --clean --only=linux-amd64,linux-arm64,windows-amd64 --snapshot=${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'push' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CGO_ENABLED: 1
-
-      - name: Upload Linux/Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tide-linux-windows-${{ steps.version_info.outputs.VERSION }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-          if-no-files-found: error
-
-  # Build job for macOS targets on macOS runner
-  build_macos:
-    name: Build macOS
-    runs-on: macos-latest
-    needs: [auto-tag]
-    # Only run for actual releases or manual dispatch to save on macOS runner minutes
-    if: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '>=1.21'
-          check-latest: true
-
-      # Cache Go modules - improved path and ordering
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
-      # Download dependencies first
-      - name: Download Go modules
-        run: go mod download
+          # Set path for cross compilers if needed
+          echo "PATH=$PATH:/usr/aarch64-linux-gnu/bin:/usr/x86_64-w64-mingw32/bin" >> $GITHUB_ENV
         shell: bash
 
       - name: Set build date
@@ -197,80 +82,41 @@ jobs:
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
         shell: bash
 
-      - name: Set version information
-        id: version_info
-        run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-
-      # Run GoReleaser for macOS only
-      - name: Run GoReleaser (macOS only)
+      # Run GoReleaser based on event type
+      - name: Run GoReleaser (Release on tag)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: v1.35.2  # Ensure we use a version that supports --only flag
-          args: release --clean --only=darwin-amd64,darwin-arm64 --snapshot=${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'push' }}
+          version: "~> v2" # Ensure we use a version that supports --only flag
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-compiler environment variables
           CGO_ENABLED: 1
 
-      - name: Upload macOS Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tide-macos-${{ steps.version_info.outputs.VERSION }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-          if-no-files-found: error
-
-  # Create GitHub Release with all artifacts
-  create_release:
-    name: Create GitHub Release
+  # Combine artifacts if needed (for non-tag builds)
+  combine_artifacts:
+    name: Combine Artifacts
     runs-on: ubuntu-latest
-    needs: [auto-tag, build_linux_windows, build_macos]
-    if: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
-    
-    steps:
-      - name: Set release version
-        id: release_version
-        run: |
-          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
+    if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name == 'workflow_dispatch' }}
+    needs: [build_linux_windows]
 
-      # Download all artifacts
+    steps:
       - name: Download Linux/Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: tide-linux-windows-${{ steps.release_version.outputs.VERSION }}
-          path: ./dist
-          
+          name: tide-linux-windows-${{ github.sha }}
+          path: dist
+
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
-          name: tide-macos-${{ steps.release_version.outputs.VERSION }}
-          path: ./dist
-          
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          name: tide-macos-${{ github.sha }}
+          path: dist
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.release_version.outputs.VERSION }}
-          name: "Tide ${{ steps.release_version.outputs.VERSION }}"
-          draft: false
-          prerelease: false
-          files: |
-            ./dist/*.tar.gz
-            ./dist/*.zip
-            ./dist/checksums.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: tide-all-platforms-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
