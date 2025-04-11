@@ -74,277 +74,82 @@ func isPositionWithin(pos, start, end types.Position) bool {
 }
 
 // DrawBuffer draws the *visible* portion using the provided theme.
-// It now takes an activeTheme argument.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) {
-
+	// Fallback theme handling (same as before)
 	if activeTheme == nil {
 		logger.Warnf("DrawBuffer called with nil theme, using package default.")
-		defaultTheme := &theme.DevComfortDark // Assuming DevComfortDark is accessible
-		// Check if the default theme itself has issues
-		if defaultTheme == nil || len(defaultTheme.Styles) == 0 {
-			activeTheme = &theme.Theme{Styles: map[string]tcell.Style{"Default": tcell.StyleDefault}}
-		} else {
-			activeTheme = defaultTheme
-		}
+		activeTheme = &theme.Theme{Styles: map[string]tcell.Style{"Default": tcell.StyleDefault}}
 	}
 
 	// Get styles from theme
-	defaultStyle := activeTheme.GetStyle("Default")       // Still need for text defaults
-	lineNumberStyle := activeTheme.GetStyle("LineNumber") // Get LineNumber style
-	selectionStyle := activeTheme.GetStyle("Selection")
-	searchHighlightStyle := activeTheme.GetStyle("SearchHighlight")
+	defaultStyle := activeTheme.GetStyle("Default")
+	lineNumberStyle := activeTheme.GetStyle("LineNumber")
 
+	// Get screen dimensions and viewport position
 	width, height := tuiManager.Size()
-	viewY, viewX := editor.GetViewport()
-	selStart, selEnd, selectionActive := editor.GetSelection()
-	highlights := editor.GetFindManager().GetHighlights() // Fetch search highlights from find manager
-	statusBarHeight := config.Get().Editor.StatusBarHeight
-	viewHeight := height - statusBarHeight
+	logger.DebugTagf("draw", "DrawBuffer Start: Screen Size (%d x %d)", width, height)
 
-	// --- Add Debug Logging ---
-	logger.DebugTagf("draw", "DrawBuffer: Terminal Size (%d x %d), StatusBarHeight: %d, ViewHeight: %d",
-		width, height, statusBarHeight, viewHeight)
-	// --- End Debug Logging ---
-
-	if viewHeight <= 0 || width <= 0 {
-		return
-	}
-
+	viewY, _ := editor.GetViewport() // Using _ to ignore viewX as it's unused
 	lines := editor.GetBuffer().Lines()
 	lineCount := len(lines)
 	if lineCount == 0 {
 		lineCount = 1
-	} // Avoid Log10(0)
+	}
 
-	// --- Calculate Gutter Width ---
+	// Calculate gutter width
 	maxDigits := int(math.Log10(float64(lineCount))) + 1
-	lineNumberPadding := 1 // Space between number and text
-	gutterWidth := maxDigits + lineNumberPadding
-	if gutterWidth >= width { // Not enough space for gutter and text
-		gutterWidth = 0 // Disable gutter if screen too narrow
-	}
-	textAreaWidth := width - gutterWidth
+	lineNumberPadding := 1
+	initialGutterWidth := maxDigits + lineNumberPadding
+	logger.DebugTagf("draw", "DrawBuffer Calc: lineCount=%d, maxDigits=%d, padding=%d -> initialGutterWidth=%d",
+		lineCount, maxDigits, lineNumberPadding, initialGutterWidth)
 
-	// Configurable Tab Width from config
-	tabWidth := config.DefaultTabWidth
-	if tabWidth <= 0 {
-		tabWidth = 8 // Basic fallback if config is invalid
-	}
-
-	visibleSearchHighlights := make(map[int][]types.HighlightRegion) // Renamed for clarity
-	for _, h := range highlights {
-		// Iterate over all lines in the highlight range
-		startLine := h.Start.Line
-		endLine := h.End.Line
-
-		// For each line in the highlight range that's visible
-		for lineIdx := startLine; lineIdx <= endLine; lineIdx++ {
-			if lineIdx >= viewY && lineIdx < viewY+viewHeight {
-				visibleSearchHighlights[lineIdx] = append(visibleSearchHighlights[lineIdx], h)
-			}
-		}
+	gutterWidth := initialGutterWidth
+	if gutterWidth >= width {
+		logger.DebugTagf("draw", "DrawBuffer Gutter Check: gutterWidth (%d) >= width (%d). Setting gutterWidth to 0.",
+			gutterWidth, width)
+		gutterWidth = 0
+	} else {
+		logger.DebugTagf("draw", "DrawBuffer Gutter Check: gutterWidth (%d) < width (%d). Keeping gutterWidth.",
+			gutterWidth, width)
 	}
 
 	// --- Draw Loop ---
-	for screenY := 0; screenY < viewHeight; screenY++ {
+	for screenY := 0; screenY < height; screenY++ {
 		bufferLineIdx := screenY + viewY
 
-		// --- B: Draw Line Number Gutter ---
-		if gutterWidth > 0 {
-			lineNumStr := ""
-			currentLineStyle := lineNumberStyle
-
-			// Draw line number with ITS OWN BACKGROUND (important if Default uses reset)
-			_, bg, _ := lineNumberStyle.Decompose()
-			if bg == tcell.ColorDefault || bg == tcell.ColorReset {
-				// Ensure line number gutter explicitly uses the main default BG
-				_, bgDef, _ := defaultStyle.Decompose()
-				currentLineStyle = currentLineStyle.Background(bgDef)
-			}
-
-			if bufferLineIdx >= 0 && bufferLineIdx < len(lines) {
-				// Format line number, right-aligned
-				lineNumStr = fmt.Sprintf("%*d", maxDigits, bufferLineIdx+1)
-
-				// Optional: Highlight current line number differently
-				if editor.GetCursor().Line == bufferLineIdx {
-					currentLineStyle = currentLineStyle.Bold(true)
-				}
-			}
-
-			// Fill gutter area first
-			for fillX := 0; fillX < gutterWidth; fillX++ {
-				tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentLineStyle)
-			}
-
-			// Draw the formatted string into the gutter area
-			lineNumRunes := []rune(lineNumStr)
-			for i, r := range lineNumRunes {
-				drawX := i                                 // Draw starting from column 0
-				if drawX < gutterWidth-lineNumberPadding { // Ensure within number area
-					tuiManager.screen.SetContent(drawX, screenY, r, nil, currentLineStyle)
-				}
+		// --- Draw Line Number Gutter ---
+		if bufferLineIdx >= 0 && bufferLineIdx < len(lines) {
+			lineNumStr := fmt.Sprintf("%d", bufferLineIdx+1)
+			for i, r := range lineNumStr {
+				tuiManager.screen.SetContent(i, screenY, r, nil, lineNumberStyle)
 			}
 		}
 
-		// Check if buffer line exists
+		// --- Draw Buffer Text (if line exists) ---
 		if bufferLineIdx < 0 || bufferLineIdx >= len(lines) {
-			// --- Draw Tildes for lines below buffer (Optional) ---
-			// If we removed the full background fill, we might want these
-			if gutterWidth < width { // Only if there's space past gutter
-				// Example: Draw '~' using comment style's FG, but default BG
-				tildeStyle := activeTheme.GetStyle("Comment")
-				_, bgDef, attrDef := defaultStyle.Decompose()
-				fgTilde, _, attrTilde := tildeStyle.Decompose()
-				finalTildeStyle := tcell.StyleDefault.Foreground(fgTilde).Background(bgDef).Attributes(attrDef | attrTilde)
-				tuiManager.screen.SetContent(gutterWidth, screenY, '~', nil, finalTildeStyle)
-			}
-			continue // Nothing more to draw on this line
+			continue // Skip text drawing for lines outside buffer
 		}
 
-		// --- C: Draw Buffer Text ---
-		lineBytes := lines[bufferLineIdx]
-		lineStr := string(lineBytes)
-		gr := uniseg.NewGraphemes(lineStr)
-		lineSearchHighlights := visibleSearchHighlights[bufferLineIdx]
-		lineSyntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
-
-		currentVisualX := 0 // Visual column offset on the buffer line (from col 0)
-		currentRuneIndex := 0
-
-		logger.DebugTagf("tui", "Line %d: Starting draw. Content: %q", bufferLineIdx, lineStr)
-
-		for gr.Next() { // Iterate through grapheme clusters
-			clusterRunes := gr.Runes()
-			clusterWidth := gr.Width() // Visual width of this cluster
-			clusterVisualStart := currentVisualX
-			clusterVisualEnd := currentVisualX + clusterWidth
-
-			// Position where this cluster *would* start drawing on screen
-			screenX := (clusterVisualStart - viewX) + gutterWidth
-
-			// Is any part of this cluster visible within the text area?
-			visibleOnScreen := clusterVisualEnd > viewX && clusterVisualStart < viewX+textAreaWidth
-
-			if len(clusterRunes) == 0 {
-				logger.DebugTagf("tui", "Line %d: Empty grapheme cluster at runeIndex %d", bufferLineIdx, currentRuneIndex)
+		gr := uniseg.NewGraphemes(string(lines[bufferLineIdx]))
+		screenX := gutterWidth // Start drawing text after the gutter
+		for gr.Next() {
+			runes := gr.Runes()
+			if len(runes) == 0 {
 				continue
 			}
 
-			mainRune := clusterRunes[0]
+			mainRune := runes[0]
+			currentStyle := defaultStyle // Placeholder for actual style logic
 
-			// --- Enhanced Logging ---
-			isTab := (mainRune == '\t') // Explicitly store comparison result
-			logger.DebugTagf("tui",
-				"Line %d, RuneIdx %d, VisStart %d: Processing rune '%c' (%v). Is Tab: %t, Visible: %v",
-				bufferLineIdx, currentRuneIndex, clusterVisualStart, mainRune, mainRune, isTab, visibleOnScreen,
-			)
-			// --- End Enhanced Logging ---
+			// --- Log the current style being used for characters ---
+			fg, bg, attr := currentStyle.Decompose()
+			logger.DebugTagf("draw", "SetContent Line %d: screenX=%d, screenY=%d, rune='%c'(%d), Style=(FG:%v, BG:%v, Attr:%v)",
+				bufferLineIdx, screenX, screenY, mainRune, mainRune, fg, bg, attr)
+			// --- End Log ---
 
-			if isTab { // Use the boolean variable instead of direct comparison
-				// --- Tab Expansion ---
-				spacesToDraw := tabWidth - (clusterVisualStart % tabWidth)
-				tabVisualWidthOnLine := spacesToDraw
-
-				logger.DebugTagf("tui",
-					"TAB Draw: Line %d, Rune %d, VisStart %d, ScreenX %d, Spaces %d | ViewportX %d, Gutter %d, Width %d",
-					bufferLineIdx, currentRuneIndex, clusterVisualStart, screenX, spacesToDraw,
-					viewX, gutterWidth, width,
-				)
-
-				// --- STYLE FOR TAB SPACES: ALWAYS USE DEFAULT ---
-				// Don't inherit selection/search highlight for the *spaces*.
-				// The tab *character itself* might be highlighted if selected,
-				// but the visual space it occupies should use the default background.
-				tabSpaceStyle := defaultStyle // <<< USE THE BASE DEFAULT STYLE
-
-				// Draw spaces
-				drawCount := 0 // Count how many spaces we actually draw
-				tabDrawStart := screenX
-				tabDrawEnd := tabDrawStart + spacesToDraw
-
-				for drawX := tabDrawStart; drawX < tabDrawEnd; drawX++ {
-					if drawX >= gutterWidth && drawX < width {
-						// Draw the space using the designated tab space style
-						tuiManager.screen.SetContent(drawX, screenY, ' ', nil, tabSpaceStyle) // <<< USE tabSpaceStyle
-						drawCount++
-					} else {
-						// Log if we skip drawing due to clipping
-						logger.DebugTagf("tui",
-							"TAB Clip: Skipping draw at screen X=%d (Gutter=%d, Width=%d)",
-							drawX, gutterWidth, width,
-						)
-					}
-				}
-
-				logger.DebugTagf("tui", "TAB Draw: Actually drew %d spaces for this tab.", drawCount)
-
-				// Advance correctly by the tab's visual width
-				currentVisualX += tabVisualWidthOnLine
-				currentRuneIndex++ // Tab is one rune
-				continue           // Skip the normal character processing
-			} else if visibleOnScreen {
-				// --- Determine Style (Syntax > Search > Selection) ---
-				currentStyle := defaultStyle // Start with default (important!)
-				currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
-
-				// Apply Syntax
-				for _, synHL := range lineSyntaxHighlights {
-					if currentRuneIndex >= synHL.StartCol && currentRuneIndex < synHL.EndCol {
-						currentStyle = activeTheme.GetStyle(synHL.StyleName)
-						break
-					}
-				}
-				// Apply Search Highlight
-				for _, h := range lineSearchHighlights {
-					if h.Type == types.HighlightSearch && isPositionWithin(currentPos, h.Start, h.End) {
-						currentStyle = searchHighlightStyle
-						break
-					}
-				}
-				// Apply Selection Highlight
-				if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
-					currentStyle = selectionStyle
-				}
-
-				// --- Draw the Cluster (for non-tab characters) ---
-				if screenX >= gutterWidth && screenX < width { // Regular character start is visible
-					// Draw the rune cluster using the determined style
-					combining := clusterRunes[1:]
-					tuiManager.screen.SetContent(screenX, screenY, mainRune, combining, currentStyle)
-					// Fill remaining cells for wide characters using the determined style
-					for cw := 1; cw < clusterWidth; cw++ {
-						fillX := screenX + cw
-						if fillX < width {
-							tuiManager.screen.SetContent(fillX, screenY, ' ', nil, currentStyle)
-						}
-					}
-				}
-			}
-
-			// Update state for the next cluster (ONLY if not handled by tab 'continue')
-			currentVisualX += clusterWidth
-			currentRuneIndex += len(clusterRunes)
-
-			// Optimization: Stop drawing if we've gone past the visible text area edge
-			if currentVisualX >= viewX+textAreaWidth {
-				break
-			}
+			tuiManager.screen.SetContent(screenX, screenY, mainRune, nil, currentStyle)
+			screenX += gr.Width()
 		}
-
-		// --- IMPORTANT: Fill remainder of text line ---
-		// If the line text doesn't reach the end of the textAreaWidth, fill the rest
-		// with defaultStyle to ensure background consistency.
-		lastVisualXOnLine := currentVisualX // Store where text ended visually
-		lastScreenX := (lastVisualXOnLine - viewX) + gutterWidth
-		for fillX := lastScreenX; fillX < width; fillX++ {
-			if fillX >= gutterWidth { // Only fill within the text area
-				tuiManager.screen.SetContent(fillX, screenY, ' ', nil, defaultStyle)
-			}
-		}
-		// --- End Fill Remainder ---
-
-		logger.DebugTagf("tui", "Line %d: Finished draw loop.", bufferLineIdx) // Log line end
 	}
 }
 

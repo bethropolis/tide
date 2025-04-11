@@ -243,11 +243,13 @@ func (a *App) GetTheme() *theme.Theme {
 
 // SetTheme changes the app's active theme and triggers a redraw.
 func (a *App) SetTheme(name string) error {
+	// Use the manager to set the theme
 	err := a.themeManager.SetTheme(name)
 	if err != nil {
-		return err
+		return err // Propagate error (e.g., theme not found)
 	}
 
+	// Update app's cached theme
 	newTheme := a.themeManager.Current()
 	oldThemeName := "unknown"
 	if a.activeTheme != nil {
@@ -255,14 +257,27 @@ func (a *App) SetTheme(name string) error {
 	}
 	a.activeTheme = newTheme
 
+	// --- ADD THIS ---
+	// Update the TUI screen's default style
+	if a.tuiManager != nil {
+		screen := a.tuiManager.GetScreen()
+		if screen != nil {
+			screen.SetStyle(newTheme.GetStyle("Default")) // Use the new default style
+			logger.Debugf("App: Updated tcell screen default style.")
+		}
+	}
+	// --- END ADD ---
+
 	logger.Debugf("App: Theme changed from '%s' to '%s', requesting redraw",
 		oldThemeName, newTheme.Name)
 
+	// Dispatch theme changed event
 	a.eventManager.Dispatch(event.TypeThemeChanged, event.ThemeChangedData{
 		OldThemeName: oldThemeName,
 		NewThemeName: newTheme.Name,
 	})
 
+	// Force an immediate redraw
 	a.requestRedraw()
 	return nil
 }
