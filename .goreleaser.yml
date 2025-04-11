@@ -61,8 +61,6 @@ nfpms:
   - # Configuration for creating DEB and RPM packages
     id: tide-packages
     package_name: tide # Name used by apt/dnf/yum
-    # NFPM version (v2 is recommended)
-    nfpm_version: 2
 
     # --- Required metadata ---
     vendor: "Your Company or Name" # Replace with your info
@@ -75,12 +73,6 @@ nfpms:
     formats:
       - deb
       - rpm
-
-    # Target architectures (maps Go arch to package arch)
-    # You might need to adjust these based on nfpm specifics if needed
-    archs:
-      - amd64
-      - arm64
 
     # Files to include in the package and their destinations
     contents:
@@ -105,24 +97,7 @@ nfpms:
 
     # Package dependencies (optional)
     # dependencies:
-    #   deb: # Dependencies specific to deb packages
-    #     - libc6
-    #   rpm: # Dependencies specific to rpm packages
-    #     - glibc
-
-# AppImage configuration
-appimage:
-  # Enable AppImage generation
-  enabled: true
-  # Optional: Specify the path to the AppRun script if needed
-  # apprun: "./path/to/AppRun"
-  # Optional: Specify dependencies to bundle using linuxdeploy plugins
-  # linuxdeploy:
-  #   # Example: Bundle GTK libraries if it's a GUI app
-  #   - gtk
-  # Optional: Provide a desktop file and icon for AppImage metadata
-  # desktop: ./packaging/linux/tide.desktop
-  # icon: ./packaging/linux/tide.png
+    #   - libc6
 
 # Generate checksums for artifacts
 checksum:
