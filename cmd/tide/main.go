@@ -49,12 +49,6 @@ func main() {
 		logger.EnableFilterDebug(true)
 	}
 
-	// Special case for "filter" log level
-	if cfg.Logger.LogLevel == "filter" {
-		logger.EnableFilterDebug(true)
-		logger.Debugf("Debug filter enabled.")
-	}
-
 	// --- Now use the logger ---
 	logger.Infof("Starting Tide editor...")
 	logger.DebugTagf("config", "Effective Log level set to: %s", cfg.Logger.LogLevel)

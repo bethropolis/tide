@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -13,8 +14,9 @@ import (
 
 // Config holds the application's combined configuration.
 type Config struct {
-	Logger logger.Config `toml:"logger"` // Embed logger config under [logger] table
-	Editor EditorConfig  `toml:"editor"` // Editor-specific settings
+	Logger  logger.Config                     `toml:"logger"`  // Embed logger config under [logger] table
+	Editor  EditorConfig                      `toml:"editor"`  // Editor-specific settings
+	Plugins map[string]map[string]interface{} `toml:"plugins"` // Holds plugin configurations
 	// Add other sections like 'Theme', 'Keymap' later if needed
 }
 
@@ -47,6 +49,7 @@ func NewDefaultConfig() *Config {
 			SystemClipboard: SystemClipboard,
 			StatusBarHeight: StatusBarHeight, // Initialize with the constant value
 		},
+		Plugins: make(map[string]map[string]interface{}), // Initialize Plugins map
 	}
 }
 
@@ -79,6 +82,16 @@ func loadFromFile(filePath string, verbose bool) (*Config, error) {
 	if verbose {
 		logger.Infof("Successfully loaded configuration from: %s", filePath)
 	}
+
+	// Convert plugin names in the loaded config to lowercase
+	if cfg.Plugins != nil {
+		lowerPlugins := make(map[string]map[string]interface{}, len(cfg.Plugins))
+		for name, pluginCfg := range cfg.Plugins {
+			lowerPlugins[strings.ToLower(name)] = pluginCfg
+		}
+		cfg.Plugins = lowerPlugins // Replace with lowercase keys
+	}
+
 	return cfg, nil
 }
 
@@ -161,8 +174,12 @@ func LoadConfig(configFilePath string, flags *Flags) (*Config, error) {
 		loadedConfig = cfg // Store globally
 	})
 
+
 	return loadedConfig, loadErr
 }
+
+
+
 
 // Get returns the loaded application configuration. Panics if LoadConfig wasn't called.
 func Get() *Config {
