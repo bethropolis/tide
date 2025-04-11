@@ -25,31 +25,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # Cache apt packages for cross-compilers
-      # - name: Cache cross-compilers
-      #   id: cache-cross-compilers
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: |
-      #       /var/lib/apt/lists/
-      #       /var/cache/apt/archives/
-      #       ~/.apt-cross-toolchains
-      #     key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('.github/workflows/dev.yml') }}
+      # Cache cross-compiler installations
+      - name: Cache cross-compilers
+        id: cache-cross-compilers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.apt-cross-toolchains
+          key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('scripts/setup.sh') }}
 
-      # Install cross-compilers for CGO support only if cache missed
+      # Install cross-compilers using setup script only if cache missed
       - name: Install cross compilers for CGO
-        # if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
+        if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc \
-            gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            gcc-mingw-w64-x86-64
-          
-          # Create directory to mark that cross-compilers are installed
-          mkdir -p ~/.apt-cross-toolchains
-          echo "Installed on: $(date)" > ~/.apt-cross-toolchains/installed.txt
+          bash ./scripts/setupo.sh
         shell: bash
 
       - name: Set up Go
@@ -101,24 +90,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-compiler environment variables
           CGO_ENABLED: 1
-
-      - name: Run GoReleaser (Build only - no tag)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          version: "~> v2"
-          args: build --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CGO_ENABLED: 1
-
-      - name: Upload Linux/Windows Artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: tide-linux-windows-${{ github.sha }}
-          path: dist/
-          if-no-files-found: error
 
 
   # Combine artifacts if needed (for non-tag builds)
