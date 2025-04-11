@@ -25,14 +25,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      # Cache apt packages for cross-compilers
+      - name: Cache cross-compilers
+        id: cache-cross-compilers
+        uses: actions/cache@v4
         with:
-          go-version: '>=1.21'
-          check-latest: true
+          path: |
+            /var/lib/apt/lists/
+            /var/cache/apt/archives/
+            ~/.apt-cross-toolchains
+          key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('.github/workflows/dev.yml') }}
 
-      # Install cross-compilers for CGO support
+      # Install cross-compilers for CGO support only if cache missed
       - name: Install cross compilers for CGO
+        if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -40,7 +46,17 @@ jobs:
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             gcc-mingw-w64-x86-64
+          
+          # Create directory to mark that cross-compilers are installed
+          mkdir -p ~/.apt-cross-toolchains
+          echo "Installed on: $(date)" > ~/.apt-cross-toolchains/installed.txt
         shell: bash
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.21'
+          check-latest: true
 
       # Cache Go modules - moved after Go is set up but before any go commands
       - name: Cache Go modules
@@ -62,6 +78,9 @@ jobs:
       - name: Setup environment
         run: |
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
+          
+          # Set path for cross compilers if needed
+          echo "PATH=$PATH:/usr/aarch64-linux-gnu/bin:/usr/x86_64-w64-mingw32/bin" >> $GITHUB_ENV
         shell: bash
 
       - name: Set build date
@@ -87,8 +106,8 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: v2.8.2 
-          args: build --snapshot --clean --only=linux-amd64,linux-arm64,windows-amd64
+          version: v"~> v2"
+          args: build --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CGO_ENABLED: 1
@@ -139,7 +158,7 @@ jobs:
       - name: Run GoReleaser (macOS only)
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: v2.8.2 
+          version: "~> v2" 
           args: ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean --only=darwin-amd64,darwin-arm64' || 'build --snapshot --clean --only=darwin-amd64,darwin-arm64' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
