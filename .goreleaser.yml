@@ -3,6 +3,9 @@
 
 project_name: tide
 
+version: 2
+
+
 before:
   hooks:
     - go mod tidy
@@ -21,20 +24,20 @@ builds:
     goarch:
       - amd64
     ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
-  # macOS AMD64 build (requires macOS runner)
-  - id: darwin-amd64
-    main: ./cmd/tide
-    binary: "{{ .ProjectName }}"
-    env:
-      - CGO_ENABLED=1
-    goos:
-      - darwin
-    goarch:
-      - amd64
-    ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+  # # macOS AMD64 build (requires macOS runner)
+  # - id: darwin-amd64
+  #   main: ./cmd/tide
+  #   binary: "{{ .ProjectName }}"
+  #   env:
+  #     - CGO_ENABLED=1
+  #   goos:
+  #     - darwin
+  #   goarch:
+  #     - amd64
+  #   ldflags:
+  #     - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
   # macOS ARM64 build (requires macOS runner)
   - id: darwin-arm64
@@ -47,7 +50,7 @@ builds:
     goarch:
       - arm64
     ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
   # Windows AMD64 build
   - id: windows-amd64
@@ -61,7 +64,7 @@ builds:
     goarch:
       - amd64
     ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
   # Linux ARM64 build
   - id: linux-arm64
@@ -75,7 +78,7 @@ builds:
     goarch:
       - arm64
     ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
 # Archive configuration for distributions
 archives:
@@ -83,7 +86,7 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
     files:
       - README.md
       - LICENSE
@@ -113,7 +116,7 @@ checksum:
 
 # Snapshot configuration
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 # Changelog generation configuration
 changelog:
