@@ -9,36 +9,46 @@ before:
   hooks:
     # Ensure dependencies are tidy
     - go mod tidy
-    # You could add go generate or other pre-build steps here
-    # - go generate ./...
 
 # Build configuration
 builds:
   - # Main build configuration
-    id: tide-build # Optional ID for the build
+    id: tide-build # Build ID
     # Path to main package
-    main: ./cmd/tide # Adjust this path if your main.go is elsewhere
-    # Environment variables for the build
+    main: ./cmd/tide
     env:
-      - CGO_ENABLED=1 # Enable CGO for tree-sitter dependencies
-    # Target platforms (matches your original xgo targets)
+      - CGO_ENABLED=1
+    # Target platforms - limited to what we have compilers for
     goos:
       - linux
-      - windows
-      - darwin
+      - windows # Windows builds with CGO might need special handling
+      - darwin # Note: Darwin/macOS builds may require a macOS runner
     goarch:
       - amd64
-      - arm64
-    # Ignore builds that aren't needed for certain packages (optional)
+      - arm64 # Only build ARM64 for Linux
     ignore:
-      - goos: darwin
-        goarch: arm64 # Example: If you don't need darwin/arm64 packages
       - goos: windows
-        goarch: arm64 # Example: If you don't need windows/arm64 packages
-    # Inject version information using ldflags (GoReleaser provides template variables)
+        goarch: arm64
+      # Disable Darwin builds in cross-compilation as they require a macOS builder
+      - goos: darwin
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+    # Build hooks
+    hooks:
+      # This is a workaround to use the right compiler for each target
+      pre: |
+        {{ if eq .Os "linux" }}
+        {{ if eq .Arch "arm64" }}
+        export CC=aarch64-linux-gnu-gcc
+        {{ end }}
+        {{ end }}
+        {{ if eq .Os "windows" }}
+        export CC=x86_64-w64-mingw32-gcc
+        {{ end }}
+    # Inject version information using ldflags
     ldflags:
       - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
-    # Binary name template (optional, defaults to project_name)
     binary: "{{ .ProjectName }}"
 
 # Archive configuration (for .tar.gz and .zip files)
@@ -47,27 +57,25 @@ archives:
     id: tide-archives
     # Name template for archives
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    # Automatically override format to zip for windows
     format_overrides:
       - goos: windows
         format: zip
-    # Files to include in the archive relative to the project root
     files:
       - README.md
-      - LICENSE # Make sure you have a LICENSE file
+      - LICENSE
 
 # NFPM configuration (for DEB and RPM packages)
 nfpms:
   - # Configuration for creating DEB and RPM packages
     id: tide-packages
-    package_name: tide # Name used by apt/dnf/yum
+    package_name: tide
 
     # --- Required metadata ---
-    vendor: "Your Company or Name" # Replace with your info
-    homepage: "https://github.com/your-username/your-repo" # Replace with your project URL
-    maintainer: "Your Name <your.email@example.com>" # Replace with your contact info
-    description: "A brief description of your 'tide' application." # Replace with your description
-    license: "Specify License (e.g., MIT, Apache-2.0)" # Replace, should match LICENSE file
+    vendor: "Bethropolis"
+    homepage: "https://github.com/bethropolis/tide"
+    maintainer: "Bethropolis <bethropolis@gmail.com>"
+    description: "A terminal text editor written in Go."
+    license: "MIT"
 
     # Formats to generate
     formats:
@@ -76,28 +84,10 @@ nfpms:
 
     # Files to include in the package and their destinations
     contents:
-      # Install the binary to /usr/bin
-      - src: "{{ .Path }}" # Path to the built binary (provided by GoReleaser)
-        dst: "/usr/bin/{{ .ProjectName }}" # Destination path
+      - src: "{{ .Path }}"
+        dst: "/usr/bin/{{ .ProjectName }}"
         file_info:
-          mode: 0755 # Ensure it's executable
-
-      # --- Optional files (Uncomment and provide paths if you have them) ---
-      # # Desktop entry file for application menus
-      # - src: ./packaging/linux/tide.desktop # Path to your .desktop file
-      #   dst: /usr/share/applications/tide.desktop
-      #   file_info:
-      #     mode: 0644
-
-      # # Icon file
-      # - src: ./packaging/linux/tide.png # Path to your icon (e.g., 256x256 png)
-      #   dst: /usr/share/icons/hicolor/256x256/apps/tide.png
-      #   file_info:
-      #     mode: 0644
-
-    # Package dependencies (optional)
-    # dependencies:
-    #   - libc6
+          mode: 0755
 
 # Generate checksums for artifacts
 checksum:
@@ -121,8 +111,6 @@ changelog:
 # GitHub Release configuration
 release:
   draft: false
-  # Prerelease flag (can be 'auto' based on tag, true, or false)
   prerelease: auto
-  # Name template for the release title
   name_template: "Release {{.Tag}}"
 

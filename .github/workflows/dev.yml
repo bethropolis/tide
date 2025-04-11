@@ -33,6 +33,16 @@ jobs:
         with:
           go-version: '>=1.21' # Use a version compatible with your project and GoReleaser
 
+      # Install cross-compilers for CGO support
+      - name: Install cross compilers for CGO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            gcc-mingw-w64-x86-64
+        shell: bash
+
       # Optional: Cache Go modules to speed up builds
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -42,18 +52,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      # Set environment variables for cross-compilation with CGO
+      - name: Setup Cross-Compilation Environment
+        run: |
+          echo "PATH=$PATH:/usr/local/go/bin" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+        shell: bash
+
+      # Run GoReleaser with appropriate settings for each target platform
       - name: Run GoReleaser (Release on Tag)
         # Run only if the ref triggering the workflow is a tag
-        if: startsWith(github.ref, 'refs/tags/')
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
           version: latest
-          # Perform the full release process
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: Set CGO_ENABLED=1 if your project requires CGO
-          # CGO_ENABLED: "1"
+          # These variables are picked up by goreleaser
+          CC_FOR_TARGET_linux_arm64: aarch64-linux-gnu-gcc
+          CC_FOR_linux_arm64: aarch64-linux-gnu-gcc
+          CC_FOR_TARGET_windows_amd64: x86_64-w64-mingw32-gcc
+          CC_FOR_windows_amd64: x86_64-w64-mingw32-gcc
 
       - name: Run GoReleaser (Build Only - No Tag)
         # Run only if the ref triggering the workflow is NOT a tag (i.e., a branch push)
@@ -61,17 +81,14 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: latest
-          # Use 'build' to only generate artifacts in dist/ based on snapshot config
-          # Does NOT create a GitHub release/pre-release
-          args: build --snapshot --clean
+          args: build --snapshot --clean --single-target
         env:
-          # Token might be needed for private repos/dependencies, even if not releasing
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: Set CGO_ENABLED=1 if your project requires CGO
-          # CGO_ENABLED: "1"
+          # We're only building for the host platform in dev builds to avoid cross-compilation issues
+          # This makes the dev build faster and more reliable
 
       - name: Upload Build Artifacts (No Tag)
-        # Fixed: Run only if the ref triggering the workflow is NOT a tag
+        # Run only if the ref triggering the workflow is NOT a tag
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
@@ -79,6 +96,4 @@ jobs:
           name: tide-dev-build-${{ github.sha }}
           # Upload the contents of the 'dist' directory where goreleaser build puts artifacts
           path: dist/
-          # Optional: How long to retain the artifact (default is 90 days)
-          # retention-days: 7
           if-no-files-found: error # Error if the dist directory is empty
