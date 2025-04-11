@@ -1,38 +1,85 @@
 # .goreleaser.yml
-# Configuration for GoReleaser. See https://goreleaser.com/intro/ for documentation.
+# Configuration for GoReleaser with cross-platform support
 
-# Project name (should match your binary name)
 project_name: tide
 
-# Runs before the build process
 before:
   hooks:
-    # Ensure dependencies are tidy
     - go mod tidy
 
-# Build configuration - simplified for CGO
+# Build configuration for all platforms
 builds:
-  - # Main build configuration
-    id: tide-build 
+  # Linux AMD64 build
+  - id: linux-amd64
     main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
     env:
       - CGO_ENABLED=1
-    # For development builds with --single-target, only build for current platform
-    # For release builds, we'll use xgo via the release.yml workflow
+      - CC=gcc
     goos:
       - linux
     goarch:
       - amd64
-      - arm64
-    # No build hooks to avoid the panic
     ldflags:
       - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
-    binary: "{{ .ProjectName }}"
 
-# Archive configuration (for .tar.gz and .zip files)
+  # macOS AMD64 build (requires macOS runner)
+  - id: darwin-amd64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+
+  # macOS ARM64 build (requires macOS runner)
+  - id: darwin-arm64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+
+  # Windows AMD64 build
+  - id: windows-amd64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+
+  # Linux ARM64 build
+  - id: linux-arm64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+    goos:
+      - linux
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
+
+# Archive configuration for distributions
 archives:
-  - # Default archive settings
-    id: tide-archives
+  - id: tide-archives
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
@@ -41,25 +88,18 @@ archives:
       - README.md
       - LICENSE
 
-# NFPM configuration (for DEB and RPM packages)
+# Linux package formats (deb/rpm)
 nfpms:
-  - # Configuration for creating DEB and RPM packages
-    id: tide-packages
+  - id: tide-packages
     package_name: tide
-
-    # --- Required metadata ---
     vendor: "Bethropolis"
     homepage: "https://github.com/bethropolis/tide"
     maintainer: "Bethropolis <bethropolis@gmail.com>"
     description: "A terminal text editor written in Go."
     license: "MIT"
-
-    # Formats to generate
     formats:
       - deb
       - rpm
-
-    # Files to include in the package and their destinations
     contents:
       - src: "{{ .Path }}"
         dst: "/usr/bin/{{ .ProjectName }}"
@@ -71,7 +111,7 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
-# Snapshot configuration (for builds from main/master branch)
+# Snapshot configuration
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
 

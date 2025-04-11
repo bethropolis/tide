@@ -6,44 +6,42 @@ on:
   push:
     branches:
       - dev
-    # Also trigger specifically on tag pushes if you want tags pushed directly to trigger a release
     tags:
-      - 'v*.*.*' # Optional: if you want pushing tags directly to trigger a release via this workflow
+      - 'v*.*.*'
 
-# Permissions needed for GoReleaser to create releases (when tagged)
 permissions:
   contents: write
 
 jobs:
-  # Job to build development artifacts or releases using GoReleaser
-  build_dev_or_release:
-    name: Build Dev Artifacts or Release
+  # Build job for Linux and Windows targets
+  build_linux_windows:
+    name: Build Linux and Windows
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # GoReleaser needs the full history to generate changelogs/snapshot names correctly
           fetch-depth: 0
-          fetch-tags: true # Ensure tags are fetched
+          fetch-tags: true
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '>=1.21' # Use a version compatible with your project and GoReleaser
+          go-version: '>=1.21'
 
       # Install cross-compilers for CGO support
       - name: Install cross compilers for CGO
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            gcc \
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             gcc-mingw-w64-x86-64
         shell: bash
 
-      # Optional: Cache Go modules to speed up builds
+      # Cache Go modules
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
@@ -52,48 +50,124 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      # Set environment variables for cross-compilation with CGO
-      - name: Setup Cross-Compilation Environment
+      # Set environment variables
+      - name: Setup environment
         run: |
-          echo "PATH=$PATH:/usr/local/go/bin" >> $GITHUB_ENV
           echo "CGO_ENABLED=1" >> $GITHUB_ENV
         shell: bash
 
-      # Run GoReleaser with appropriate settings for each target platform
-      - name: Run GoReleaser (Release on Tag)
-        # Run only if the ref triggering the workflow is a tag
+      - name: Set build date
+        id: build_date
+        run: |
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
+        shell: bash
+
+      # Run GoReleaser based on event type
+      - name: Run GoReleaser (Release on tag)
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
           version: latest
-          args: release --clean
+          args: release --clean --skip=darwin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # These variables are picked up by goreleaser
-          CC_FOR_TARGET_linux_arm64: aarch64-linux-gnu-gcc
-          CC_FOR_linux_arm64: aarch64-linux-gnu-gcc
-          CC_FOR_TARGET_windows_amd64: x86_64-w64-mingw32-gcc
-          CC_FOR_windows_amd64: x86_64-w64-mingw32-gcc
+          # Cross-compiler environment variables
+          CGO_ENABLED: 1
 
-      - name: Run GoReleaser (Build Only - No Tag)
-        # Run only if the ref triggering the workflow is NOT a tag (i.e., a branch push)
+      - name: Run GoReleaser (Build only - no tag)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
           version: latest
-          args: build --snapshot --clean --single-target
+          args: build --snapshot --clean --skip=darwin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # We're only building for the host platform in dev builds to avoid cross-compilation issues
-          # This makes the dev build faster and more reliable
+          CGO_ENABLED: 1
 
-      - name: Upload Build Artifacts (No Tag)
-        # Run only if the ref triggering the workflow is NOT a tag
+      - name: Upload Linux/Windows Artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
-          # Name the artifact uniquely, e.g., using the commit SHA
-          name: tide-dev-build-${{ github.sha }}
-          # Upload the contents of the 'dist' directory where goreleaser build puts artifacts
+          name: tide-linux-windows-${{ github.sha }}
           path: dist/
-          if-no-files-found: error # Error if the dist directory is empty
+          if-no-files-found: error
+
+  # Build job for macOS targets (requires macOS runner)
+  build_macos:
+    name: Build macOS
+    runs-on: macos-latest
+    # Only run on tags or manually triggered builds to save on macOS minutes
+    if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.21'
+
+      # Cache Go modules
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # Set environment variables
+      - name: Setup environment
+        run: |
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+        shell: bash
+
+      # Run GoReleaser for macOS only
+      - name: Run GoReleaser (macOS only)
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: latest
+          args: ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean --skip=linux --skip=windows' || 'build --snapshot --clean --skip=linux --skip=windows' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: 1
+
+      - name: Upload macOS Artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tide-macos-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
+  # Combine artifacts if needed (for non-tag builds)
+  combine_artifacts:
+    name: Combine Artifacts
+    runs-on: ubuntu-latest
+    if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name == 'workflow_dispatch' }}
+    needs: [build_linux_windows, build_macos]
+    
+    steps:
+      - name: Download Linux/Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tide-linux-windows-${{ github.sha }}
+          path: dist
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tide-macos-${{ github.sha }}
+          path: dist
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tide-all-platforms-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
