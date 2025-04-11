@@ -97,7 +97,7 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	width, height := tuiManager.Size()
 	viewY, viewX := editor.GetViewport()
 	selStart, selEnd, selectionActive := editor.GetSelection()
-	highlights := editor.GetHighlights()
+	highlights := editor.GetFindManager().GetHighlights() // Fetch search highlights from find manager
 	statusBarHeight := config.Get().Editor.StatusBarHeight
 	viewHeight := height - statusBarHeight
 

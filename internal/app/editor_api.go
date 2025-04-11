@@ -153,19 +153,8 @@ func (api *appEditorAPI) GetThemeStyle(styleName string) tcell.Style {
 
 // SetTheme sets the active theme by name
 func (api *appEditorAPI) SetTheme(name string) error {
-	theme, ok := api.app.GetThemeManager().GetTheme(name)
-	if !ok {
-		return fmt.Errorf("theme '%s' not found", name)
-	}
-
-	// Set the theme in the app (which updates both the app's activeTheme and the global reference)
-	api.app.SetTheme(theme)
-
-	// Explicitly request a redraw to show the theme change immediately
-	api.app.requestRedraw()
-
-	logger.Debugf("Theme changed to '%s', redraw requested", name)
-	return nil
+	// Pass the theme name directly to SetTheme
+	return api.app.SetTheme(name)
 }
 
 // GetTheme returns the current active theme

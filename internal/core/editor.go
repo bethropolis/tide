@@ -1,15 +1,14 @@
 package core
 
 import (
-	"sync"
-
 	"errors"
 
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core/clipboard"
-	"github.com/bethropolis/tide/internal/core/cursor" // Add history import
+	"github.com/bethropolis/tide/internal/core/cursor"
 	"github.com/bethropolis/tide/internal/core/find"
+	"github.com/bethropolis/tide/internal/core/highlight" // Import core highlight
 	"github.com/bethropolis/tide/internal/core/history"
 	"github.com/bethropolis/tide/internal/core/selection"
 	"github.com/bethropolis/tide/internal/core/text"
@@ -30,39 +29,38 @@ type Editor struct {
 	// Event Manager
 	eventManager *event.Manager // Added for dispatching events on delete etc.
 
-	// Syntax Highlighting State
-	highlighter      *hl.Highlighter    // Highlighter service instance
-	syntaxHighlights hl.HighlightResult // Store computed syntax highlights
-	syntaxTree       *sitter.Tree       // Store the current syntax tree
-	highlightMutex   sync.RWMutex       // Mutex to protect syntaxHighlights & syntaxTree
+	// Highlighter Service (passed in)
+	highlighter *hl.Highlighter // Highlighter service instance
 
 	// Sub-system Managers
 	clipboardManager *clipboard.Manager
 	cursorManager    *cursor.Manager
 	selectionManager *selection.Manager
 	textOps          *text.Operations
-	historyManager   *history.Manager // Add history manager
-	findManager      *find.Manager    // Add find manager field
+	historyManager   *history.Manager
+	findManager      *find.Manager
+	highlightManager *highlight.Manager // Use the core highlight manager
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
-func NewEditor(buf buffer.Buffer) *Editor {
+// It now requires a redraw function for the highlight manager.
+func NewEditor(buf buffer.Buffer, highlighterService *hl.Highlighter, redrawFunc func()) *Editor {
 	cfg := config.Get() // Get loaded config
 	e := &Editor{
-		buffer:           buf,
-		scrollOff:        cfg.Editor.ScrollOff,
-		syntaxHighlights: make(hl.HighlightResult),
-		syntaxTree:       nil,
-		highlightMutex:   sync.RWMutex{},
+		buffer:      buf,
+		scrollOff:   cfg.Editor.ScrollOff,
+		highlighter: highlighterService, // Store the service
 	}
 
-	// Initialize all managers directly in NewEditor
+	// Initialize managers that depend on the editor (e)
 	e.textOps = text.NewOperations(e)
 	e.cursorManager = cursor.NewManager(e)
 	e.selectionManager = selection.NewManager(e)
-	e.clipboardManager = clipboard.NewManager(e, cfg.Editor.SystemClipboard) // Pass system clipboard preference
+	e.clipboardManager = clipboard.NewManager(e, cfg.Editor.SystemClipboard)
 	e.historyManager = history.NewManager(e, history.DefaultMaxHistory)
 	e.findManager = find.NewManager(e)
+	// Initialize highlight manager, passing dependencies including redrawFunc
+	e.highlightManager = highlight.NewManager(e, e.highlighter, redrawFunc)
 
 	logger.DebugTagf("core", "Editor created and managers initialized. System Clipboard: %v", cfg.Editor.SystemClipboard)
 	return e
@@ -73,9 +71,11 @@ func (e *Editor) SetEventManager(mgr *event.Manager) {
 	e.eventManager = mgr
 }
 
-// SetHighlighter injects the highlighter service.
+// SetHighlighter (optional) allows changing the highlighter service later if needed.
 func (e *Editor) SetHighlighter(h *hl.Highlighter) {
 	e.highlighter = h
+	// TODO: Should potentially trigger a re-highlight if service changes?
+	// The highlight manager might need to be updated too.
 }
 
 // GetBuffer returns the editor's buffer.
@@ -101,17 +101,21 @@ func (e *Editor) GetViewport() (int, int) {
 	return e.cursorManager.GetViewport()
 }
 
-// GetCurrentTree safely gets the current tree (needed for incremental parse)
+// GetCurrentTree safely gets the current tree from the highlight manager
 func (e *Editor) GetCurrentTree() *sitter.Tree {
-	e.highlightMutex.RLock()
-	defer e.highlightMutex.RUnlock()
-	return e.syntaxTree
+	if e.highlightManager == nil {
+		logger.Warnf("Editor.GetCurrentTree called before highlightManager initialized")
+		return nil
+	}
+	return e.highlightManager.GetCurrentTree()
 }
 
 // GetEventManager returns the event manager
 func (e *Editor) GetEventManager() *event.Manager {
 	return e.eventManager
 }
+
+// --- Selection Methods ---
 
 // GetSelecting returns whether selection is active
 func (e *Editor) GetSelecting() bool {
@@ -132,7 +136,6 @@ func (e *Editor) HasSelection() bool {
 }
 
 // GetSelection returns the normalized selection range (start <= end).
-// Returns two invalid positions and false if no selection is active.
 func (e *Editor) GetSelection() (start types.Position, end types.Position, ok bool) {
 	if e.selectionManager == nil {
 		logger.Warnf("Editor.GetSelection called before selectionManager initialized")
@@ -151,7 +154,6 @@ func (e *Editor) ClearSelection() {
 }
 
 // StartOrUpdateSelection manages selection state during movement.
-// Called typically when a Shift + movement key is pressed.
 func (e *Editor) StartOrUpdateSelection() {
 	if e.selectionManager == nil {
 		logger.Warnf("Editor.StartOrUpdateSelection called before selectionManager initialized")
@@ -160,6 +162,8 @@ func (e *Editor) StartOrUpdateSelection() {
 	e.selectionManager.StartOrUpdateSelection()
 }
 
+// --- Cursor Methods ---
+
 // SetCursor sets the cursor position
 func (e *Editor) SetCursor(pos types.Position) {
 	if e.cursorManager == nil {
@@ -167,6 +171,7 @@ func (e *Editor) SetCursor(pos types.Position) {
 		return
 	}
 	e.cursorManager.SetPosition(pos)
+	// Selection update during movement is handled in editor_methods.go/MoveCursor
 }
 
 // ScrollToCursor ensures cursor remains visible
@@ -176,6 +181,9 @@ func (e *Editor) ScrollToCursor() {
 	}
 }
 
+// --- Search Highlighting Methods (Delegated to Find Manager) ---
+
+// HasHighlights checks for search highlights.
 func (e *Editor) HasHighlights() bool {
 	if e.findManager == nil {
 		logger.Warnf("Editor.HasHighlights called before findManager initialized")
@@ -184,6 +192,7 @@ func (e *Editor) HasHighlights() bool {
 	return e.findManager.HasHighlights()
 }
 
+// ClearHighlights clears search highlights.
 func (e *Editor) ClearHighlights() {
 	if e.findManager == nil {
 		logger.Warnf("Editor.ClearHighlights called before findManager initialized")
@@ -192,32 +201,45 @@ func (e *Editor) ClearHighlights() {
 	e.findManager.ClearHighlights()
 }
 
-func (e *Editor) GetHighlights() []types.HighlightRegion {
+// GetCurrentSearchHighlights delegates to findManager
+func (e *Editor) GetCurrentSearchHighlights() []types.HighlightRegion {
 	if e.findManager == nil {
-		logger.Warnf("Editor.GetHighlights called before findManager initialized")
 		return nil
 	}
 	return e.findManager.GetHighlights()
 }
 
-// UpdateSyntaxHighlights updates the highlighting
+// --- Syntax Highlighting Methods (Delegated to Highlight Manager) ---
+
+// UpdateSyntaxHighlights tells the highlight manager to update its internal state.
+// This might be called by the highlight manager's background task.
 func (e *Editor) UpdateSyntaxHighlights(newHighlights hl.HighlightResult, newTree *sitter.Tree) {
-	e.highlightMutex.Lock()
-	defer e.highlightMutex.Unlock()
-
-	// Close old tree if it exists
-	if e.syntaxTree != nil {
-		e.syntaxTree.Close() // Call Close() directly
+	if e.highlightManager == nil {
+		logger.Warnf("Editor.UpdateSyntaxHighlights called before highlightManager initialized")
+		return
 	}
-
-	e.syntaxHighlights = newHighlights
-	e.syntaxTree = newTree
+	e.highlightManager.UpdateHighlights(newHighlights, newTree)
 }
 
-// TriggerSyntaxHighlight triggers a highlight operation
-func (e *Editor) TriggerSyntaxHighlight() {
-	logger.DebugTagf("core", "Editor: TriggerSyntaxHighlight called (handled by app manager)")
+// GetSyntaxHighlightsForLine returns highlights for a specific line from the manager.
+func (e *Editor) GetSyntaxHighlightsForLine(lineNum int) []types.StyledRange {
+	if e.highlightManager == nil {
+		return nil
+	}
+	return e.highlightManager.GetHighlightsForLine(lineNum)
 }
+
+// GetHighlightManager returns the highlight manager instance. Needed for App to call AccumulateEdit.
+func (e *Editor) GetHighlightManager() *highlight.Manager {
+	return e.highlightManager
+}
+
+// FilePath returns the file path from the buffer. Required by highlight manager.
+func (e *Editor) FilePath() string {
+	return e.buffer.FilePath()
+}
+
+// --- View Size ---
 
 // SetViewSize updates the view dimensions
 func (e *Editor) SetViewSize(width, height int) {
@@ -225,8 +247,9 @@ func (e *Editor) SetViewSize(width, height int) {
 
 	// Calculate the usable height (excluding status bar)
 	adjustedHeight := height
-	if adjustedHeight > config.Get().Editor.StatusBarHeight {
-		adjustedHeight -= config.Get().Editor.StatusBarHeight
+	cfg := config.Get() // Get config for status bar height
+	if adjustedHeight > cfg.Editor.StatusBarHeight {
+		adjustedHeight -= cfg.Editor.StatusBarHeight
 	} else {
 		adjustedHeight = 0
 	}
@@ -234,20 +257,11 @@ func (e *Editor) SetViewSize(width, height int) {
 
 	// Inform the cursor manager of the new view size
 	if e.cursorManager != nil {
-		e.cursorManager.SetViewSize(width, height)
+		e.cursorManager.SetViewSize(width, height) // Pass original height to cursor manager for PageMove calc
 	}
 }
 
-// GetSyntaxHighlightsForLine returns highlights for a specific line
-func (e *Editor) GetSyntaxHighlightsForLine(lineNum int) []types.StyledRange {
-	e.highlightMutex.RLock()
-	defer e.highlightMutex.RUnlock()
-
-	if styles, ok := e.syntaxHighlights[lineNum]; ok {
-		return styles
-	}
-	return nil
-}
+// --- History Methods ---
 
 // GetHistoryManager returns the history manager for undo/redo
 func (e *Editor) GetHistoryManager() *history.Manager {
@@ -281,20 +295,16 @@ func (e *Editor) ClearHistory() {
 	e.historyManager.Clear()
 }
 
-// GetCurrentSearchHighlights delegates to findManager
-func (e *Editor) GetCurrentSearchHighlights() []types.HighlightRegion {
-	if e.findManager == nil {
-		return nil
-	}
-	return e.findManager.GetHighlights()
-}
+// --- Find Manager Access ---
 
 // GetFindManager provides direct access to the find manager
 func (e *Editor) GetFindManager() *find.Manager {
 	return e.findManager
 }
 
-// ScrollOff returns the scrolloff setting (lines to keep visible above/below cursor)
+// --- Scroll Offset ---
+
+// ScrollOff returns the scrolloff setting
 func (e *Editor) ScrollOff() int {
 	return e.scrollOff
 }
