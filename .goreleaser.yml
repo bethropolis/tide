@@ -125,9 +125,9 @@ changelog:
       - Merge pull request
       - Merge branch
 
-# GitHub Release configuration
-release:
-  draft: false
-  prerelease: auto
-  name_template: "Release {{.Tag}}"
+# # GitHub Release configuration
+# release:
+#   draft: false
+#   prerelease: auto
+#   name_template: "Release {{.Tag}}"
 
