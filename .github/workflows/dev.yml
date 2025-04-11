@@ -1,90 +1,32 @@
-# .github/workflows/release.yml
-name: Release Go Binaries with GoReleaser
+# .github/workflows/dev.yml
+name: Development Build
 
-# Trigger workflow on tag push, PR, or manual dispatch
+# Trigger workflow only on pushes to the 'dev' branch
 on:
-  pull_request:
-    branches:
-      - main
   push:
-    # Only trigger on tag pushes for the release part
+    branches:
+      - dev
+    # Also trigger specifically on tag pushes if you want tags pushed directly to trigger a release
     tags:
-      - 'v*.*.*' # Matches tags like v1.0.0, v0.1.2 etc.
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name for the release (e.g., v1.0.0)'
-        required: true
-        default: 'manual-release'
-      release_name:
-        description: 'Name of the release'
-        required: false
+      - 'v*.*.*' # Optional: if you want pushing tags directly to trigger a release via this workflow
 
+# Permissions needed for GoReleaser to create releases (when tagged)
 permissions:
-  contents: write # Required for GoReleaser to create releases/tags and upload artifacts
+  contents: write
 
 jobs:
-  # Optional: Auto-tag job (keep if you want auto-tagging on merge to main)
-  # If you ONLY want releases based on manual tags, you can remove this job
-  # and the 'needs' dependency in the 'release' job.
-  auto-tag:
-    name: Create Tag on PR Merge
+  # Job to build development artifacts or releases using GoReleaser
+  build_dev_or_release:
+    name: Build Dev Artifacts or Release
     runs-on: ubuntu-latest
-    # Run only when a PR is merged to main (push to main that's not a tag)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
-    outputs:
-      new_tag: ${{ steps.create_tag.outputs.new_tag }}
-      # Optionally output changelog if generated here
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Required for tag calculation
-
-      - name: Create new tag
-        id: create_tag
-        run: |
-          # Fetch all tags to find the latest one
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0") # Start at v0.0.0 if no tags
-          echo "Latest tag: $LATEST_TAG"
-
-          # Simple patch version increment (adjust logic if needed)
-          VERSION=${LATEST_TAG#v}
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
-          NEW_PATCH=$((PATCH + 1))
-          NEW_TAG="v$MAJOR.$MINOR.$NEW_PATCH"
-
-          echo "New tag: $NEW_TAG"
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-          # Configure git user for tagging
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-          # Create and push the new tag
-          git tag $NEW_TAG
-          git push origin $NEW_TAG
-        shell: bash
-
-  # Main release job using GoReleaser
-  release:
-    name: Build and Release with GoReleaser
-    runs-on: ubuntu-latest
-    # Ensure auto-tag runs first if it's triggered
-    needs: [auto-tag]
-    # Run always after needs, OR if it's a tag push, PR, or manual dispatch
-    # Important: GoReleaser action itself will only publish on tag events by default
-    if: always() && (github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # GoReleaser needs the full history to generate changelogs correctly
+          # GoReleaser needs the full history to generate changelogs/snapshot names correctly
           fetch-depth: 0
+          fetch-tags: true # Ensure tags are fetched
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -100,17 +42,43 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5 # Use the latest stable version
+      - name: Run GoReleaser (Release on Tag)
+        # Run only if the ref triggering the workflow is a tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: goreleaser/goreleaser-action@v5
         with:
-          # 'latest' uses the latest GoReleaser version
-          # Pin to a specific version for stability: e.g., 'v1.25.1'
           version: latest
-          # Arguments to pass to GoReleaser
-          # 'release' performs the full build, package, and release process
-          # '--clean' removes the dist directory before starting
+          # Perform the full release process
           args: release --clean
         env:
-          # GITHUB_TOKEN is required to interact with the GitHub API (create releases, upload artifacts)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CGO_ENABLED: "1"
+          # Optional: Set CGO_ENABLED=1 if your project requires CGO
+          # CGO_ENABLED: "1"
+
+      - name: Run GoReleaser (Build Only - No Tag)
+        # Run only if the ref triggering the workflow is NOT a tag (i.e., a branch push)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: latest
+          # Use 'build' to only generate artifacts in dist/ based on snapshot config
+          # Does NOT create a GitHub release/pre-release
+          args: build --snapshot --clean
+        env:
+          # Token might be needed for private repos/dependencies, even if not releasing
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: Set CGO_ENABLED=1 if your project requires CGO
+          # CGO_ENABLED: "1"
+
+      - name: Upload Build Artifacts (No Tag)
+        # Fixed: Run only if the ref triggering the workflow is NOT a tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          # Name the artifact uniquely, e.g., using the commit SHA
+          name: tide-dev-build-${{ github.sha }}
+          # Upload the contents of the 'dist' directory where goreleaser build puts artifacts
+          path: dist/
+          # Optional: How long to retain the artifact (default is 90 days)
+          # retention-days: 7
+          if-no-files-found: error # Error if the dist directory is empty
