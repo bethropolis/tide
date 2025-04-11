@@ -40,17 +40,17 @@ builds:
   #     - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
   # macOS ARM64 build (requires macOS runner)
-  - id: darwin-arm64
-    main: ./cmd/tide
-    binary: "{{ .ProjectName }}"
-    env:
-      - CGO_ENABLED=1
-    goos:
-      - darwin
-    goarch:
-      - arm64
-    ldflags:
-      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+  # - id: darwin-arm64
+  #   main: ./cmd/tide
+  #   binary: "{{ .ProjectName }}"
+  #   env:
+  #     - CGO_ENABLED=1
+  #   goos:
+  #     - darwin
+  #   goarch:
+  #     - arm64
+  #   ldflags:
+  #     - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
 
   # Windows AMD64 build
   - id: windows-amd64
