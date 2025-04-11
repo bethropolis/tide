@@ -7,10 +7,7 @@ on:
       - main
     tags:
       - "v*.*.*" # Updated to match versioning pattern
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+
 
 permissions:
   contents: write # Required for creating releases and tags
