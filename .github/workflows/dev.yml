@@ -26,19 +26,19 @@ jobs:
           fetch-tags: true
 
       # Cache apt packages for cross-compilers
-      - name: Cache cross-compilers
-        id: cache-cross-compilers
-        uses: actions/cache@v4
-        with:
-          path: |
-            /var/lib/apt/lists/
-            /var/cache/apt/archives/
-            ~/.apt-cross-toolchains
-          key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('.github/workflows/dev.yml') }}
+      # - name: Cache cross-compilers
+      #   id: cache-cross-compilers
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: |
+      #       /var/lib/apt/lists/
+      #       /var/cache/apt/archives/
+      #       ~/.apt-cross-toolchains
+      #     key: ${{ runner.os }}-cross-compilers-v1-${{ hashFiles('.github/workflows/dev.yml') }}
 
       # Install cross-compilers for CGO support only if cache missed
       - name: Install cross compilers for CGO
-        if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
+        # if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
