@@ -20,7 +20,6 @@ import (
 	"github.com/bethropolis/tide/internal/statusbar"
 	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/tui"
-	"github.com/bethropolis/tide/plugins/wordcount"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -94,9 +93,10 @@ func NewApp(filePath string) (*App, error) {
 
 	commands.RegisterAppCommands(appInstance.editorAPI, appInstance)
 
-	wcPlugin := wordcount.New()
-	if err := appInstance.pluginManager.Register(wcPlugin); err != nil {
-		logger.Warnf("Failed to register WordCount plugin: %v", err)
+	// --- Register Plugins (Call centralized function) ---
+	err = registerPlugins(appInstance.pluginManager) // <<< CALL NEW FUNCTION
+	if err != nil {
+		logger.Errorf("Errors occurred during plugin registration: %v", err)
 	}
 
 	appInstance.eventManager.Subscribe(event.TypeCursorMoved, appInstance.handleCursorMovedForStatus)
@@ -134,7 +134,7 @@ func NewApp(filePath string) (*App, error) {
 
 		logger.DebugTagf("highlight", "App: Calling highlighter.HighlightBuffer synchronously...")
 		startTime := time.Now()
-		initialHighlights, initialTree, err := appInstance.highlighterService.HighlightBuffer(initialCtx, buf, lang, queryBytes, nil)
+		initialHighlights, initialTree, err := appInstance.highlighterService.HighlightBuffer(initialCtx, buf.Bytes(), lang, queryBytes, nil) // <<< Pass buf.Bytes()
 		duration := time.Since(startTime)
 
 		if err != nil {

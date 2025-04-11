@@ -57,6 +57,12 @@ type EditorAPI interface {
 	// --- Application Control ---
 	RequestQuit(force bool) // Signal the application to quit
 
+	// --- Configuration ---
+	// GetPluginConfigValue retrieves a configuration value for a specific plugin.
+	// Keys within a plugin's config are case-sensitive as defined in the TOML.
+	// Returns the value and true if found, otherwise nil and false.
+	GetPluginConfigValue(pluginName, key string) (interface{}, bool)
+
 	// --- Configuration (Future) ---
 	// GetConfigValue(key string) (interface{}, error)
 }
