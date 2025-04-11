@@ -29,6 +29,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '>=1.21'
+          check-latest: true
 
       # Install cross-compilers for CGO support
       - name: Install cross compilers for CGO
@@ -41,14 +42,21 @@ jobs:
             gcc-mingw-w64-x86-64
         shell: bash
 
-      # Cache Go modules
+      # Cache Go modules - moved after Go is set up but before any go commands
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
+
+      # Download dependencies first (separate step to ensure they're downloaded before cache is used)
+      - name: Download Go modules
+        run: go mod download
+        shell: bash
 
       # Set environment variables
       - name: Setup environment

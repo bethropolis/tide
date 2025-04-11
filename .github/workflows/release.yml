@@ -79,6 +79,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '>=1.21'
+          check-latest: true
 
       # Install cross-compilers for CGO support
       - name: Install cross compilers for CGO
@@ -89,6 +90,22 @@ jobs:
             gcc-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             gcc-mingw-w64-x86-64
+        shell: bash
+
+      # Cache Go modules - improved path and ordering
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # Download dependencies first
+      - name: Download Go modules
+        run: go mod download
         shell: bash
 
       - name: Set build date
@@ -155,6 +172,23 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '>=1.21'
+          check-latest: true
+
+      # Cache Go modules - improved path and ordering
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # Download dependencies first
+      - name: Download Go modules
+        run: go mod download
+        shell: bash
 
       - name: Set build date
         id: build_date
