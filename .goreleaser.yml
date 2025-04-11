@@ -20,7 +20,7 @@ builds:
     main: ./cmd/tide # Adjust this path if your main.go is elsewhere
     # Environment variables for the build
     env:
-      - CGO_ENABLED=0 # Disable CGO for easier cross-compilation unless required
+      - CGO_ENABLED=1 # Enable CGO for tree-sitter dependencies
     # Target platforms (matches your original xgo targets)
     goos:
       - linux
