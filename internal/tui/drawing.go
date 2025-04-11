@@ -84,17 +84,26 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	// Get styles from theme
 	defaultStyle := activeTheme.GetStyle("Default")
 	lineNumberStyle := activeTheme.GetStyle("LineNumber")
+	selectionStyle := activeTheme.GetStyle("Selection")
+	searchHighlightStyle := activeTheme.GetStyle("SearchHighlight")
 
 	// Get screen dimensions and viewport position
 	width, height := tuiManager.Size()
 	logger.DebugTagf("draw", "DrawBuffer Start: Screen Size (%d x %d)", width, height)
 
-	viewY, _ := editor.GetViewport() // Using _ to ignore viewX as it's unused
+	viewY, viewX := editor.GetViewport() // Get both viewY and viewX for horizontal scrolling
+
 	lines := editor.GetBuffer().Lines()
 	lineCount := len(lines)
 	if lineCount == 0 {
 		lineCount = 1
 	}
+
+	// Get selection info
+	selStart, selEnd, selectionActive := editor.GetSelection()
+
+	// Get search highlights
+	searchHighlights := editor.GetFindManager().GetHighlights()
 
 	// Calculate gutter width
 	maxDigits := int(math.Log10(float64(lineCount))) + 1
@@ -111,6 +120,12 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	} else {
 		logger.DebugTagf("draw", "DrawBuffer Gutter Check: gutterWidth (%d) < width (%d). Keeping gutterWidth.",
 			gutterWidth, width)
+	}
+
+	// Configure tab width
+	tabWidth := config.DefaultTabWidth
+	if tabWidth <= 0 {
+		tabWidth = 8 // Fallback
 	}
 
 	// --- Draw Loop ---
@@ -130,25 +145,147 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 			continue // Skip text drawing for lines outside buffer
 		}
 
-		gr := uniseg.NewGraphemes(string(lines[bufferLineIdx]))
-		screenX := gutterWidth // Start drawing text after the gutter
+		// Get syntax highlights for this line
+		syntaxHighlights := editor.GetSyntaxHighlightsForLine(bufferLineIdx)
+
+		// Create a map for fast lookup of search highlights on this line
+		lineSearchHighlights := make(map[int]bool)
+		if searchHighlights != nil {
+			for _, highlight := range searchHighlights {
+				if highlight.Start.Line <= bufferLineIdx && bufferLineIdx <= highlight.End.Line {
+					// If highlight spans multiple lines, we need special handling
+					if highlight.Start.Line < bufferLineIdx && bufferLineIdx < highlight.End.Line {
+						// Middle of multi-line highlight - entire line is highlighted
+						for i := 0; i < len(lines[bufferLineIdx]); i++ {
+							lineSearchHighlights[i] = true
+						}
+					} else if highlight.Start.Line == bufferLineIdx && highlight.End.Line > bufferLineIdx {
+						// Start of multi-line highlight
+						for i := highlight.Start.Col; i < len(lines[bufferLineIdx]); i++ {
+							lineSearchHighlights[i] = true
+						}
+					} else if highlight.Start.Line < bufferLineIdx && highlight.End.Line == bufferLineIdx {
+						// End of multi-line highlight
+						for i := 0; i < highlight.End.Col; i++ {
+							lineSearchHighlights[i] = true
+						}
+					} else if highlight.Start.Line == bufferLineIdx && highlight.End.Line == bufferLineIdx {
+						// Single line highlight
+						for i := highlight.Start.Col; i < highlight.End.Col; i++ {
+							lineSearchHighlights[i] = true
+						}
+					}
+				}
+			}
+		}
+
+		// Draw text with syntax highlighting, accounting for horizontal scrolling
+		lineStr := string(lines[bufferLineIdx])
+		gr := uniseg.NewGraphemes(lineStr)
+		screenX := gutterWidth // Start position after gutter
+		currentRuneIndex := 0
+		currentVisualX := 0 // Track visual position in the line
+
 		for gr.Next() {
 			runes := gr.Runes()
 			if len(runes) == 0 {
 				continue
 			}
 
+			// Get visual width of this grapheme cluster
+			clusterWidth := gr.Width()
+
+			// Current position for style and selection checks
+			currentPos := types.Position{Line: bufferLineIdx, Col: currentRuneIndex}
+
+			// Determine the style to use for this character
+			currentStyle := defaultStyle // Start with default style
+
+			// Apply syntax highlights if available
+			styleName := ""
+			for _, syntaxHL := range syntaxHighlights {
+				if currentRuneIndex >= syntaxHL.StartCol && currentRuneIndex < syntaxHL.EndCol {
+					styleName = syntaxHL.StyleName
+					currentStyle = activeTheme.GetStyle(styleName)
+					break
+				}
+			}
+
+			// Apply search highlight (takes precedence over syntax)
+			if _, isHighlighted := lineSearchHighlights[currentRuneIndex]; isHighlighted {
+				currentStyle = searchHighlightStyle
+			}
+
+			// Apply selection style (takes precedence over both syntax and search)
+			if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
+				currentStyle = selectionStyle
+			}
+
+			// Get the main rune
 			mainRune := runes[0]
-			currentStyle := defaultStyle // Placeholder for actual style logic
 
-			// --- Log the current style being used for characters ---
-			fg, bg, attr := currentStyle.Decompose()
-			logger.DebugTagf("draw", "SetContent Line %d: screenX=%d, screenY=%d, rune='%c'(%d), Style=(FG:%v, BG:%v, Attr:%v)",
-				bufferLineIdx, screenX, screenY, mainRune, mainRune, fg, bg, attr)
-			// --- End Log ---
+			// Handle tabs specially
+			if mainRune == '\t' {
+				// Calculate tab stops based on current visual position
+				spacesToNextTabStop := tabWidth - (currentVisualX % tabWidth)
 
-			tuiManager.screen.SetContent(screenX, screenY, mainRune, nil, currentStyle)
-			screenX += gr.Width()
+				// Only draw visible portion (after viewX)
+				if currentVisualX+spacesToNextTabStop > viewX {
+					// How many spaces to draw?
+					visibleSpaces := currentVisualX + spacesToNextTabStop - viewX
+					if currentVisualX < viewX {
+						visibleSpaces = spacesToNextTabStop - (viewX - currentVisualX)
+					}
+
+					// Draw spaces for the tab if they're visible
+					tabScreenX := screenX
+					if currentVisualX < viewX {
+						tabScreenX = gutterWidth // Start at gutter if partially visible
+					}
+
+					for i := 0; i < visibleSpaces && tabScreenX+i < width; i++ {
+						tuiManager.screen.SetContent(tabScreenX+i, screenY, ' ', nil, currentStyle)
+					}
+
+					// Adjust screen position if tab is visible
+					if currentVisualX+spacesToNextTabStop > viewX {
+						screenX = tabScreenX + visibleSpaces
+					}
+				}
+
+				currentVisualX += spacesToNextTabStop
+			} else {
+				// Regular character
+				// Only draw if it's in the visible area (after viewX)
+				if currentVisualX >= viewX {
+					// Debug logging for styles with screen positions
+					fg, bg, attr := currentStyle.Decompose()
+					logger.DebugTagf("draw", "SetContent Line %d: screenX=%d, screenY=%d, rune='%c'(%d), Style=%s (FG:%v, BG:%v, Attr:%v)",
+						bufferLineIdx, screenX, screenY, mainRune, mainRune, styleName, fg, bg, attr)
+
+					// Only draw if within screen width
+					if screenX >= gutterWidth && screenX < width {
+						// Draw character with style
+						tuiManager.screen.SetContent(screenX, screenY, mainRune, runes[1:], currentStyle)
+
+						// For wide characters (like CJK), fill the extra cells
+						for i := 1; i < clusterWidth && screenX+i < width; i++ {
+							tuiManager.screen.SetContent(screenX+i, screenY, ' ', nil, currentStyle)
+						}
+					}
+					screenX += clusterWidth
+				}
+
+				currentVisualX += clusterWidth
+			}
+
+			// Advance the rune index
+			currentRuneIndex += len(runes)
+
+			// Optimization: stop processing if we're past the visible area
+			if currentVisualX >= viewX+width-gutterWidth {
+				break
+			}
 		}
 	}
 }

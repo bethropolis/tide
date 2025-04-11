@@ -2,11 +2,11 @@
 package statusbar
 
 import (
-	"fmt"
+	"fmt" // Import strings for string operations
+	"strings"
 	"sync"
 	"time"
 
-	// "github.com/bethropolis/tide/internal/core" // Might need editor state later
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/theme" // Import theme package
 	"github.com/bethropolis/tide/internal/types" // For cursor position etc.
@@ -110,85 +110,143 @@ func (sb *StatusBar) getDefaultDisplayText() string {
 		fPath, modifiedIndicator, cursor.Line+1, cursor.Col+1, modeIndicator)
 }
 
-// Draw renders the status bar onto the screen using visual widths.
+// Draw renders the status bar onto the screen using segmented styles.
 func (sb *StatusBar) Draw(screen tcell.Screen, width, height int, activeTheme *theme.Theme) {
 	if height <= 0 || width <= 0 {
 		return
 	}
 	y := height - 1 // Status bar is always the last line
 
-	// --- Add Logging ---
 	logger.DebugTagf("draw", "statusbar.Draw: Drawing on Y=%d (Screen Height=%d)", y, height)
-	// --- End Logging ---
 
 	// Ensure theme is valid
 	if activeTheme == nil {
 		activeTheme = theme.GetCurrentTheme() // Fallback to current theme
 	}
 
-	// Get styles from the provided theme
+	// Get base style for filling and separators
 	baseStyle := activeTheme.GetStyle("StatusBar")
-	activeTheme.GetStyle("StatusBarModified")
-	messageStyle := activeTheme.GetStyle("StatusBarMessage")
-	findStyle := activeTheme.GetStyle("StatusBarFind")
 
-	sb.mu.Lock() // Lock for potential modification of tempMessageTime
-	// Clear expired temporary message *before* getting display text
-	isTempMsgActive := !sb.tempMessageTime.IsZero() && time.Since(sb.tempMessageTime) <= sb.config.MessageTimeout
-	isFindInput := isTempMsgActive && len(sb.tempMessage) > 0 && sb.tempMessage[0] == '/' // Check for find input
-
-	if !sb.tempMessageTime.IsZero() && !isTempMsgActive {
-		sb.tempMessage = ""
-		sb.tempMessageTime = time.Time{}
+	// --- Fill Background ---
+	// Fill the entire status bar row with the base style first.
+	for x := 0; x < width; x++ {
+		screen.SetContent(x, y, ' ', nil, baseStyle)
 	}
 
-	// Determine style and text based on whether a temporary message is active
-	var style tcell.Style
-	var text string
+	sb.mu.RLock() // Use RLock for reading state
+	tempMsg := sb.tempMessage
+	tempMsgTime := sb.tempMessageTime
+	fPath := sb.filePath
+	isMod := sb.isModified
+	cursor := sb.cursorPos
+	mode := sb.editorMode
+	sb.mu.RUnlock() // Unlock after reading
+
+	isTempMsgActive := !tempMsgTime.IsZero() && time.Since(tempMsgTime) <= sb.config.MessageTimeout
+	currentX := 0 // Tracks horizontal drawing position
 
 	if isTempMsgActive {
-		text = sb.tempMessage
-		if isFindInput {
-			style = findStyle // Use find input style
+		// --- Draw Temporary Message ---
+		var msgStyle tcell.Style
+		isCommandInput := len(tempMsg) > 0 && tempMsg[0] == ':'
+		isFindInput := len(tempMsg) > 0 && tempMsg[0] == '/'
+
+		if isCommandInput {
+			msgStyle = activeTheme.GetStyle("StatusBar.CommandInput")
+		} else if isFindInput {
+			msgStyle = activeTheme.GetStyle("StatusBar.FindInput")
 		} else {
-			style = messageStyle // Use regular message style
+			msgStyle = activeTheme.GetStyle("StatusBar.Message")
 		}
+		// Draw the message using the helper, allowing it to fill available width
+		drawSegment(screen, currentX, y, tempMsg, msgStyle, width)
+
 	} else {
-		text = sb.getDefaultDisplayText()
-		style = baseStyle // Use default style
+		// --- Draw Default Segments ---
+		padding := " " // Space between segments
+
+		// 1. Filename
+		filenameStyle := activeTheme.GetStyle("StatusBar.Filename")
+		displayPath := fPath
+		if displayPath == "" {
+			displayPath = "[No Name]"
+		}
+		currentX = drawSegment(screen, currentX, y, displayPath, filenameStyle, width)
+
+		// 2. Modified Indicator
+		if isMod {
+			modifiedStyle := activeTheme.GetStyle("StatusBar.Modified")
+			currentX = drawSegment(screen, currentX, y, padding+"[Modified]", modifiedStyle, width)
+		}
+
+		// Prepare right-aligned segments (calculate their total width first)
+		cursorStr := fmt.Sprintf("Line: %d, Col: %d", cursor.Line+1, cursor.Col+1)
+		modeStr := strings.ToUpper(mode)
+		separator := " -- "
+
+		cursorWidth := uniseg.StringWidth(cursorStr)
+		modeWidth := uniseg.StringWidth(modeStr)
+		separatorWidth := uniseg.StringWidth(separator)
+
+		// Calculate start position for right-aligned block
+		rightBlockWidth := cursorWidth + separatorWidth + modeWidth
+		rightStartX := width - rightBlockWidth
+
+		// Only draw right block if it doesn't overlap with left block (filename + modified)
+		if rightStartX > currentX+uniseg.StringWidth(padding) { // Ensure space for padding
+			// 3. Cursor Info (Right Aligned)
+			cursorStyle := activeTheme.GetStyle("StatusBar.CursorInfo")
+			currentX = drawSegment(screen, rightStartX, y, cursorStr, cursorStyle, width)
+
+			// 4. Separator
+			currentX = drawSegment(screen, currentX, y, separator, baseStyle, width)
+
+			// 5. Mode
+			modeStyle := activeTheme.GetStyle("StatusBar.Mode")
+			drawSegment(screen, currentX, y, modeStr, modeStyle, width)
+		} else {
+			// Not enough space, maybe just draw cursor info if possible
+			rightStartX = width - cursorWidth
+			if rightStartX > currentX+uniseg.StringWidth(padding) {
+				cursorStyle := activeTheme.GetStyle("StatusBar.CursorInfo")
+				drawSegment(screen, rightStartX, y, cursorStr, cursorStyle, width)
+			}
+			logger.DebugTagf("draw", "Status bar segments overlap, omitting mode info.")
+		}
+	}
+}
+
+// drawSegment draws text at a given position with a specific style,
+// handling clipping and returning the next available X coordinate.
+func drawSegment(screen tcell.Screen, x, y int, text string, style tcell.Style, maxWidth int) int {
+	if x >= maxWidth {
+		return x // Already past the edge
 	}
 
-	sb.mu.Unlock() // Unlock after accessing/modifying state
-
-	// --- Actual Drawing ---
-	// Fill background first
-	for x := 0; x < width; x++ {
-		screen.SetContent(x, y, ' ', nil, style) // Use determined style
-	}
-
-	// Draw text using uniseg for width calculation
 	gr := uniseg.NewGraphemes(text)
-	currentX := 0
+	startX := x // Remember start for clipping check
+
 	for gr.Next() {
 		clusterWidth := gr.Width()
-		if currentX+clusterWidth > width {
-			break // Stop if cluster doesn't fit
+		// Check if the *entire cluster* fits before drawing
+		if x+clusterWidth > maxWidth {
+			// Stop drawing at the screen edge
+			return maxWidth
 		}
 
-		runes := gr.Runes() // Get runes in the cluster
-
-		// Draw the first rune of the cluster
+		runes := gr.Runes()
 		if len(runes) > 0 {
-			mainRune := runes[0]
-			var combiningRunes []rune
-			if len(runes) > 1 {
-				combiningRunes = runes[1:]
+			screen.SetContent(x, y, runes[0], runes[1:], style)
+			// Fill for wide characters
+			for wc := 1; wc < clusterWidth; wc++ {
+				screen.SetContent(x+wc, y, ' ', nil, style) // Fill with spaces using same style
 			}
-
-			// Let tcell handle the rendering of the cluster
-			screen.SetContent(currentX, y, mainRune, combiningRunes, style)
 		}
-
-		currentX += clusterWidth // Advance by the calculated visual width
+		x += clusterWidth
 	}
+	// Log if nothing was drawn but text wasn't empty
+	if x == startX && len(text) > 0 {
+		logger.DebugTagf("draw", "drawSegment: Text '%s' completely clipped at x=%d, maxWidth=%d", text, startX, maxWidth)
+	}
+	return x // Return position after the drawn segment
 }

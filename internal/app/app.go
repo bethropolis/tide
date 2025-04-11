@@ -257,16 +257,32 @@ func (a *App) SetTheme(name string) error {
 	}
 	a.activeTheme = newTheme
 
-	// --- ADD THIS ---
-	// Update the TUI screen's default style
+	// Update the TUI screen's default style with detailed logging
 	if a.tuiManager != nil {
 		screen := a.tuiManager.GetScreen()
 		if screen != nil {
-			screen.SetStyle(newTheme.GetStyle("Default")) // Use the new default style
-			logger.Debugf("App: Updated tcell screen default style.")
+			styleToSet := newTheme.GetStyle("Default") // Get the Default style
+
+			// Decompose and log its components
+			fg, bg, attr := styleToSet.Decompose()
+			logger.Debugf("App: Theme '%s' - Default style Decomposed: FG=%#v (%T), BG=%#v (%T), Attr=%#v",
+				newTheme.Name, fg, fg, bg, bg, attr) // Log type and value
+
+			// Check if background is default/reset explicitly
+			if bg == tcell.ColorDefault {
+				logger.Warnf("App: Theme '%s' - Default style BG resolved to tcell.ColorDefault!", newTheme.Name)
+			} else if bg == tcell.ColorReset {
+				logger.Warnf("App: Theme '%s' - Default style BG resolved to tcell.ColorReset!", newTheme.Name)
+			} else {
+				r, g, bVal := bg.RGB() // Get RGB values if it's a specific color
+				logger.Debugf("App: Theme '%s' - Default style BG has specific RGB: #%02x%02x%02x", newTheme.Name, r, g, bVal)
+			}
+
+			// The actual call
+			screen.SetStyle(styleToSet)
+			logger.Debugf("App: Called screen.SetStyle for theme '%s'.", newTheme.Name)
 		}
 	}
-	// --- END ADD ---
 
 	logger.Debugf("App: Theme changed from '%s' to '%s', requesting redraw",
 		oldThemeName, newTheme.Name)

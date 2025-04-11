@@ -43,9 +43,19 @@ func (t *TUI) PollEvent() tcell.Event {
 	return t.screen.PollEvent()
 }
 
-// Clear clears the entire screen.
+// Clear clears the entire screen ensuring the background color is applied.
 func (t *TUI) Clear() {
-	t.screen.Clear()
+	// Get current active theme directly instead of trying to access screen's style
+	currentTheme := theme.GetCurrentTheme()
+	defaultStyle := currentTheme.GetStyle("Default")
+
+	// Fill the entire screen with spaces using the theme's default style
+	width, height := t.screen.Size()
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			t.screen.SetContent(x, y, ' ', nil, defaultStyle)
+		}
+	}
 }
 
 // Show makes the changes visible.
