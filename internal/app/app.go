@@ -287,29 +287,54 @@ func (a *App) requestRedraw() {
 	}
 }
 
-// updateStatusBarContent sets status bar file info, modified flag, etc.
+// updateStatusBarContent pushes current editor state to the status bar component.
 func (a *App) updateStatusBarContent() {
-	buf := a.editor.GetBuffer()
-	fileInfo := buf.FilePath()
-	if fileInfo == "" {
-		fileInfo = "[New File]"
+	buffer := a.editor.GetBuffer()
+	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
+	a.statusBar.SetCursorInfo(a.editor.GetCursor())
+
+	// Get mode string and potentially command/find buffer from ModeHandler
+	modeStr := a.modeHandler.GetCurrentModeString()
+	a.statusBar.SetEditorMode(modeStr) // Update the mode display
+
+	// Check if in Command or Find mode to display the buffer in the status bar
+	// Use SetTemporaryMessage to override the default status line
+	currentMode := a.modeHandler.GetCurrentMode()
+	if currentMode == modehandler.ModeCommand {
+		a.statusBar.SetTemporaryMessage(":%s", a.modeHandler.GetCommandBuffer())
+	} else if currentMode == modehandler.ModeFind {
+		a.statusBar.SetTemporaryMessage("/%s", a.modeHandler.GetFindBuffer())
 	}
-	a.statusBar.SetFileInfo(fileInfo, buf.IsModified())
+	// Note: If not in Command/Find mode, SetTemporaryMessage called elsewhere (e.g., by commands)
+	// will still take effect, or the status bar will show its default content if no temp message is active.
 }
 
-// drawEditor handles rendering the editor's content.
+// drawEditor handles rendering the editor's content, including the status bar.
 func (a *App) drawEditor() {
 	// Ensure the TUI manager and editor are initialized
-	if a.tuiManager == nil || a.editor == nil {
-		logger.Warnf("drawEditor: TUI manager or editor is not initialized")
+	if a.tuiManager == nil || a.editor == nil || a.statusBar == nil {
+		logger.Warnf("drawEditor: TUI manager, editor, or status bar is not initialized")
 		return
 	}
 
-	// Clear the screen before drawing
+	// --- Prep for Drawing ---
+	screen := a.tuiManager.GetScreen()
+	w, h := a.tuiManager.Size()
+	a.activeTheme = a.themeManager.Current() // Ensure we have the latest theme
+
+	// Update status bar content *before* drawing anything
+	a.updateStatusBarContent() // Update the status bar with latest info
+
+	// --- Drawing ---
 	a.tuiManager.Clear()
 
-	// Draw the buffer and cursor using the TUI manager
+	// Draw the buffer content
 	tui.DrawBuffer(a.tuiManager, a.editor, a.activeTheme)
+
+	// Draw the status bar
+	a.statusBar.Draw(screen, w, h, a.activeTheme)
+
+	// Draw the cursor (position is calculated relative to buffer draw)
 	tui.DrawCursor(a.tuiManager, a.editor)
 
 	// Refresh the screen to display changes
