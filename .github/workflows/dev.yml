@@ -38,7 +38,7 @@ jobs:
       - name: Install cross compilers for CGO
         if: steps.cache-cross-compilers.outputs.cache-hit != 'true'
         run: |
-          bash ./scripts/setupo.sh
+          bash ./scripts/setup.sh
         shell: bash
 
       - name: Set up Go
