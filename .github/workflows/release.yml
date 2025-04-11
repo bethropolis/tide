@@ -93,30 +93,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-compiler environment variables
           CGO_ENABLED: 1
-
-  # Combine artifacts if needed (for non-tag builds)
-  combine_artifacts:
-    name: Combine Artifacts
-    runs-on: ubuntu-latest
-    if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name == 'workflow_dispatch' }}
-    needs: [build_linux_windows]
-
-    steps:
-      - name: Download Linux/Windows artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: tide-linux-windows-${{ github.sha }}
-          path: dist
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: tide-macos-${{ github.sha }}
-          path: dist
-
-      - name: Upload combined artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tide-all-platforms-${{ github.sha }}
-          path: dist/
-          if-no-files-found: error
