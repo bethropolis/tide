@@ -1,0 +1,141 @@
+# .goreleaser.yml
+# Configuration for GoReleaser with cross-platform support
+
+project_name: tide
+
+version: 2
+
+
+before:
+  hooks:
+    - go mod tidy
+
+# Build configuration for all platforms
+builds:
+  # Linux AMD64 build
+  - id: linux-amd64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+      - CC=gcc
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+
+  # # macOS AMD64 build (requires macOS runner)
+  # - id: darwin-amd64
+  #   main: ./cmd/tide
+  #   binary: "{{ .ProjectName }}"
+  #   env:
+  #     - CGO_ENABLED=1
+  #   goos:
+  #     - darwin
+  #   goarch:
+  #     - amd64
+  #   ldflags:
+  #     - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+
+  # macOS ARM64 build (requires macOS runner)
+  # - id: darwin-arm64
+  #   main: ./cmd/tide
+  #   binary: "{{ .ProjectName }}"
+  #   env:
+  #     - CGO_ENABLED=1
+  #   goos:
+  #     - darwin
+  #   goarch:
+  #     - arm64
+  #   ldflags:
+  #     - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+
+  # Windows AMD64 build
+  - id: windows-amd64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+
+  # Linux ARM64 build
+  - id: linux-arm64
+    main: ./cmd/tide
+    binary: "{{ .ProjectName }}"
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+    goos:
+      - linux
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} 
+
+# Archive configuration for distributions
+archives:
+  - id: tide-archives
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+# Linux package formats (deb/rpm)
+nfpms:
+  - id: tide-packages
+    package_name: tide
+    vendor: "Bethropolis"
+    homepage: "https://github.com/bethropolis/tide"
+    maintainer: "Bethropolis <bethropolis@gmail.com>"
+    description: "A terminal text editor written in Go."
+    license: "MIT"
+    formats:
+      - deb
+      - rpm
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    bindir: /usr/bin
+    contents:
+      - src: "LICENSE"
+        dst: "/usr/share/doc/tide/LICENSE"
+      - src: "README.md" 
+        dst: "/usr/share/doc/tide/README.md"
+    builds:
+      - linux-amd64
+      - linux-arm64
+
+# Generate checksums for artifacts
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+# Snapshot configuration
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# Changelog generation configuration
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - Merge pull request
+      - Merge branch
+
+# # GitHub Release configuration
+# release:
+#   draft: false
+#   prerelease: auto
+#   name_template: "Release {{.Tag}}"
+
