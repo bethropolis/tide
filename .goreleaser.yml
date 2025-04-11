@@ -97,17 +97,18 @@ nfpms:
     package_name: tide
     vendor: "Bethropolis"
     homepage: "https://github.com/bethropolis/tide"
-    maintainer: "Bethropolis <bethropolis@gmail.com>"
+    maintainer: "Bethropolis <66518866+bethropolis@users.noreply.github.com>"
     description: "A terminal text editor written in Go."
     license: "MIT"
     formats:
       - deb
       - rpm
     contents:
-      - src: "{{ .Path }}"
+      - src: "./{{ .ProjectName }}"
         dst: "/usr/bin/{{ .ProjectName }}"
         file_info:
           mode: 0755
+
 
 # Generate checksums for artifacts
 checksum:
@@ -134,3 +135,4 @@ changelog:
 #   prerelease: auto
 #   name_template: "Release {{.Tag}}"
 
+ 
