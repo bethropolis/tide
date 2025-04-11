@@ -139,7 +139,7 @@ jobs:
       - name: Run GoReleaser (macOS only)
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: v1.35.2  # Ensure we use a version that supports --only flag
+          version: v2.8.2 
           args: ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean --only=darwin-amd64,darwin-arm64' || 'build --snapshot --clean --only=darwin-amd64,darwin-arm64' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
