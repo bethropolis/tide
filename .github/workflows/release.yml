@@ -62,143 +62,181 @@ jobs:
           git push origin $NEW_TAG
         shell: bash
 
-  # Build job - this is the main job that builds binaries and creates releases
-  build:
-    name: Build Binaries
+  # Build job for Linux and Windows on Ubuntu runner
+  build_linux_windows:
+    name: Build Linux and Windows
     runs-on: ubuntu-latest
     needs: [auto-tag]
-    if: ${{ always() && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && (github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+    
     steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
-          with:
-            fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-        - name: Set up Go
-          uses: actions/setup-go@v5
-          with:
-                go-version: '>=1.21' # Match your project requirement
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.21'
 
-        - name: Create directories
-          run: mkdir -p ./dist/package
-          shell: bash
+      # Install cross-compilers for CGO support
+      - name: Install cross compilers for CGO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            gcc-mingw-w64-x86-64
+        shell: bash
 
-        - name: Set build date
-          id: build_date
-          run: |
-            # Calculate build date upfront to avoid shell expansion issues in ldflags
-            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
-            echo "Using build date: ${BUILD_DATE}"
-          shell: bash
+      - name: Set build date
+        id: build_date
+        run: |
+          # Calculate build date upfront to avoid shell expansion issues in ldflags
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
+          echo "Using build date: ${BUILD_DATE}"
+        shell: bash
 
-        - name: Set version information
-          id: version_info
-          run: |
-            if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
-              # Tag push
-              echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
-              # Auto-tagged from PR merge
-              echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
-            elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-              # Manual dispatch
-              echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-            else
-              # Pull request
-              echo "VERSION=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-            fi
-          shell: bash
+      - name: Set version information
+        id: version_info
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            # Tag push
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # Auto-tagged from PR merge
+            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual dispatch
+            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            # Pull request
+            echo "VERSION=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
-        # --- Build with xgo and ldflags ---
-        - name: Setup xgo for Cross-Compilation
-          uses: crazy-max/ghaction-xgo@v3
-          with:
-            xgo_version: latest
-            go_version: 1.21 # Keep consistent with setup-go if possible
-            dest: dist
-            prefix: tide # Output binary prefix
-            pkg: ./cmd/tide # Specify the main package path
-            targets: windows/amd64,linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
-            v: true
-            x: false
-            race: false
-            # Inject version info via ldflags - ensure 'main.' path is correct
-            ldflags: "-s -w -X main.Version=${{ steps.version_info.outputs.VERSION }} -X main.Commit=${{ github.sha }} -X main.BuildDate=${{ steps.build_date.outputs.BUILD_DATE }}"
-            buildmode: default
-            trimpath: true
+      # Run GoReleaser for Linux and Windows
+      - name: Run GoReleaser (Linux and Windows)
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: v1.35.2  # Ensure we use a version that supports --only flag
+          args: release --clean --only=linux-amd64,linux-arm64,windows-amd64 --snapshot=${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'push' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: 1
 
-        # --- Archive Binaries ---
-        - name: Create Archives
-          run: |
-            BINARY_NAME="tide"
-            # Use the version from our version_info step
-            VERSION_TAG="${{ steps.version_info.outputs.VERSION }}"
+      - name: Upload Linux/Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tide-linux-windows-${{ steps.version_info.outputs.VERSION }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
 
-            echo "Files in dist directory:"
-            ls -la ./dist/
+  # Build job for macOS targets on macOS runner
+  build_macos:
+    name: Build macOS
+    runs-on: macos-latest
+    needs: [auto-tag]
+    # Only run for actual releases or manual dispatch to save on macOS runner minutes
+    if: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-            # Process each binary output by xgo
-            for BINARY_PATH in ./dist/tide-*; do 
-              FILENAME=$(basename "$BINARY_PATH")
-              [ ! -f "$BINARY_PATH" ] && continue # Skip if not a file
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.21'
 
-              # Parse OS/ARCH (keep existing logic)
-              if [[ "$FILENAME" == *windows* ]]; then
-                OS="windows"
-                ARCH=$(echo "$FILENAME" | sed -E 's/tide-windows-([^.]+)\.exe/\1/')
-                EXT=".zip"
-                BINARY_FILE="${BINARY_NAME}.exe"
-              else
-                OS=$(echo "$FILENAME" | cut -d'-' -f2)
-                ARCH=$(echo "$FILENAME" | cut -d'-' -f3)
-                EXT=".tar.gz"
-                BINARY_FILE="$BINARY_NAME"
-              fi
+      - name: Set build date
+        id: build_date
+        run: |
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_OUTPUT
+        shell: bash
 
-              # Use VERSION_TAG in archive name
-              ARCHIVE_NAME="${BINARY_NAME}-${VERSION_TAG}-${OS}-${ARCH}${EXT}"
+      - name: Set version information
+        id: version_info
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
-              echo "Processing: $FILENAME for $OS-$ARCH → $ARCHIVE_NAME"
+      # Run GoReleaser for macOS only
+      - name: Run GoReleaser (macOS only)
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: v1.35.2  # Ensure we use a version that supports --only flag
+          args: release --clean --only=darwin-amd64,darwin-arm64 --snapshot=${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'push' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CGO_ENABLED: 1
 
-              rm -rf ./dist/package/* # Clear package dir
-              cp "$BINARY_PATH" "./dist/package/$BINARY_FILE"
-              cp README.md ./dist/package/ || echo "Warning: README.md not found"
-              cp LICENSE ./dist/package/ || echo "Warning: LICENSE not found" # Add LICENSE
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tide-macos-${{ steps.version_info.outputs.VERSION }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
 
-              # Create archive
-              if [[ "$OS" == "windows" ]]; then
-                7z a "./dist/$ARCHIVE_NAME" "./dist/package/*"
-              else
-                tar -czvf "./dist/$ARCHIVE_NAME" -C ./dist/package .
-              fi
-            done
+  # Create GitHub Release with all artifacts
+  create_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [auto-tag, build_linux_windows, build_macos]
+    if: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: Set release version
+        id: release_version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "VERSION=${{ needs.auto-tag.outputs.new_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
-            echo "Created archives:"
-            ls -la ./dist/*.zip ./dist/*.tar.gz 2>/dev/null || echo "No archives found"
-          shell: bash
-
-        - name: Upload Artifacts (for testing/interim use)
-          uses: actions/upload-artifact@v4
-          with:
-            name: tide-binaries-${{ steps.version_info.outputs.VERSION }} # Include version in artifact name
-            path: |
-              ./dist/*.tar.gz
-              ./dist/*.zip
-            if-no-files-found: error # Fail if no archives created
-
-        # --- Create GitHub Release ---
-        - name: Create Release
-          # Run on tag pushes or after auto-tagging a PR merge
-          if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-          uses: softprops/action-gh-release@v1
-          with:
-            tag_name: ${{ steps.version_info.outputs.VERSION }}
-            name: "Release ${{ steps.version_info.outputs.VERSION }}"
-            draft: false
-            prerelease: false
-            files: |
-              ./dist/*.tar.gz
-              ./dist/*.zip
-          env:
-              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Download all artifacts
+      - name: Download Linux/Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tide-linux-windows-${{ steps.release_version.outputs.VERSION }}
+          path: ./dist
+          
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tide-macos-${{ steps.release_version.outputs.VERSION }}
+          path: ./dist
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_version.outputs.VERSION }}
+          name: "Tide ${{ steps.release_version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          files: |
+            ./dist/*.tar.gz
+            ./dist/*.zip
+            ./dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

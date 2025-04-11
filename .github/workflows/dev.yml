@@ -68,8 +68,8 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: latest
-          args: release --clean --skip=darwin
+          version: v1.35.2  # Ensure we use a version that supports --only flag
+          args: release --clean --only=linux-amd64,linux-arm64,windows-amd64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-compiler environment variables
@@ -79,8 +79,8 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: latest
-          args: build --snapshot --clean --skip=darwin
+          version: v1.35.2  # Ensure we use a version that supports --only flag
+          args: build --snapshot --clean --only=linux-amd64,linux-arm64,windows-amd64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CGO_ENABLED: 1
@@ -131,8 +131,8 @@ jobs:
       - name: Run GoReleaser (macOS only)
         uses: goreleaser/goreleaser-action@v5
         with:
-          version: latest
-          args: ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean --skip=linux --skip=windows' || 'build --snapshot --clean --skip=linux --skip=windows' }}
+          version: v1.35.2  # Ensure we use a version that supports --only flag
+          args: ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean --only=darwin-amd64,darwin-arm64' || 'build --snapshot --clean --only=darwin-amd64,darwin-arm64' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CGO_ENABLED: 1
