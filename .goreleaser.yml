@@ -10,43 +10,20 @@ before:
     # Ensure dependencies are tidy
     - go mod tidy
 
-# Build configuration
+# Build configuration - simplified for CGO
 builds:
   - # Main build configuration
-    id: tide-build # Build ID
-    # Path to main package
+    id: tide-build 
     main: ./cmd/tide
     env:
       - CGO_ENABLED=1
-    # Target platforms - limited to what we have compilers for
+    # For development builds with --single-target, only build for current platform
+    # For release builds, we'll use xgo via the release.yml workflow
     goos:
       - linux
-      - windows # Windows builds with CGO might need special handling
-      - darwin # Note: Darwin/macOS builds may require a macOS runner
     goarch:
       - amd64
-      - arm64 # Only build ARM64 for Linux
-    ignore:
-      - goos: windows
-        goarch: arm64
-      # Disable Darwin builds in cross-compilation as they require a macOS builder
-      - goos: darwin
-        goarch: arm64
-      - goos: darwin
-        goarch: amd64
-    # Build hooks
-    hooks:
-      # This is a workaround to use the right compiler for each target
-      pre: |
-        {{ if eq .Os "linux" }}
-        {{ if eq .Arch "arm64" }}
-        export CC=aarch64-linux-gnu-gcc
-        {{ end }}
-        {{ end }}
-        {{ if eq .Os "windows" }}
-        export CC=x86_64-w64-mingw32-gcc
-        {{ end }}
-    # Inject version information using ldflags
+    # No build hooks to avoid the panic
     ldflags:
       - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
     binary: "{{ .ProjectName }}"
@@ -55,7 +32,6 @@ builds:
 archives:
   - # Default archive settings
     id: tide-archives
-    # Name template for archives
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
