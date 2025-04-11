@@ -23,6 +23,7 @@ builds:
       - linux
     goarch:
       - amd64
+      - arm64
     # No build hooks to avoid the panic
     ldflags:
       - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}} -X main.BuiltBy=goreleaser
