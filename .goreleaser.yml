@@ -110,7 +110,7 @@ nfpms:
         dst: "/usr/share/doc/tide/LICENSE"
       - src: "README.md" 
         dst: "/usr/share/doc/tide/README.md"
-    builds:
+    ids:
       - linux-amd64
       - linux-arm64
 

@@ -8,7 +8,6 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-
 // Theme struct definition (remains the same)
 type Theme struct {
 	Name   string
@@ -78,11 +77,23 @@ func init() {
 			"Default":         baseStyle,
 			"Selection":       baseStyle.Reverse(true),                                                       // Invert default FG/BG
 			"SearchHighlight": tcell.StyleDefault.Background(tcell.ColorOrange).Foreground(tcell.ColorBlack), // Keep high contrast search
-			// Status Bar uses the theme background
-			"StatusBar":         tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),
+
+			// --- Status Bar Styles ---
+			"StatusBar":              tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Base: BG, default FG for separators
+			"StatusBar.Filename":     tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Filename: Default FG
+			"StatusBar.Modified":     tcell.StyleDefault.Background(dcBackground).Foreground(dcOrange).Bold(true),       // Modified Indicator: Orange, Bold
+			"StatusBar.CursorInfo":   tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Line/Col: Default FG
+			"StatusBar.Mode":         tcell.StyleDefault.Background(dcBackground).Foreground(dcMagenta).Bold(true),      // Mode: Magenta, Bold
+			"StatusBar.Message":      tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground).Italic(true), // General Message: Default FG, Italic
+			"StatusBar.CommandInput": tcell.StyleDefault.Background(dcBackground).Foreground(dcCyan).Bold(true),         // Command Input: Cyan, Bold
+			"StatusBar.FindInput":    tcell.StyleDefault.Background(dcBackground).Foreground(dcGreen).Bold(true),        // Find Input: Green, Bold
+			// --- End Status Bar Styles ---
+
+			// --- Legacy Status Bar Styles (keeping for backward compatibility) ---
 			"StatusBarModified": tcell.StyleDefault.Background(dcBackground).Foreground(dcYellow), // Yellow for modified indicator
 			"StatusBarMessage":  tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground).Bold(true),
 			"StatusBarFind":     tcell.StyleDefault.Background(dcBackground).Foreground(dcGreen).Bold(true), // Green for find prefix
+			// --- End Legacy Status Bar Styles ---
 
 			"LineNumber": baseStyle.Foreground(dcLineNumber).Background(dcBackground),
 

@@ -12,7 +12,7 @@ import (
 
 
 var (
-	Version   = "v.0.1.0" 
+	Version   = "v0.1.1" 
 	Commit    = "n/a"
 	BuildDate = "n/a"
 )
@@ -47,12 +47,6 @@ func main() {
 	// Enable filter debugging if requested
 	if flags.DebugLog != nil && *flags.DebugLog {
 		logger.EnableFilterDebug(true)
-	}
-
-	// Special case for "filter" log level
-	if cfg.Logger.LogLevel == "filter" {
-		logger.EnableFilterDebug(true)
-		logger.Debugf("Debug filter enabled.")
 	}
 
 	// --- Now use the logger ---

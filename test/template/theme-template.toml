@@ -37,23 +37,66 @@ fg = "#000000"  # Black
 bg = "#ff9900"  # Orange
 
 [styles.StatusBar]
-# Status bar at bottom of screen
+# Base style for the status bar
 fg = "#c5cdd9"  # Light gray
 bg = "#2a2f38"  # Dark blue-gray
 
+# --- New segmented status bar styles ---
+[styles.StatusBar.Filename]
+# Style for the filename part
+fg = "#c5cdd9"  # Light gray
+bg = "#2a2f38"  # Dark blue-gray
+
+[styles.StatusBar.Modified]
+# Style for the [Modified] indicator text
+fg = "#d19a66"  # Orange
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+
+[styles.StatusBar.CursorInfo]
+# Style for the Line: X, Col: Y part
+fg = "#c5cdd9"  # Light gray
+bg = "#2a2f38"  # Dark blue-gray
+
+[styles.StatusBar.Mode]
+# Style for the mode indicator (e.g., NORMAL)
+fg = "#c678dd"  # Magenta
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+
+[styles.StatusBar.Message]
+# Style for temporary messages (e.g., "Saved")
+fg = "#c5cdd9"  # Light gray
+bg = "#2a2f38"  # Dark blue-gray
+italic = true
+
+[styles.StatusBar.CommandInput]
+# Style for command input (when typing after ':')
+fg = "#56b6c2"  # Cyan
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+
+[styles.StatusBar.FindInput]
+# Style for find input (when typing after '/')
+fg = "#98c379"  # Green
+bg = "#2a2f38"  # Dark blue-gray
+bold = true
+# --- End new status bar styles ---
+
+# --- Legacy status bar styles (for compatibility) ---
 [styles.StatusBarModified]
-# Modified indicator in status bar
+# Legacy: Modified indicator in status bar
 fg = "#e5c07b"  # Yellow
 bg = "#2a2f38"  # Dark blue-gray
 
 [styles.StatusBarMessage]
-# Messages in status bar
+# Legacy: Messages in status bar
 fg = "#c5cdd9"  # Light gray
 bg = "#2a2f38"  # Dark blue-gray
 bold = true
 
 [styles.StatusBarFind]
-# Find text prefix in status bar
+# Legacy: Find text prefix in status bar
 fg = "#98c379"  # Green
 bg = "#2a2f38"  # Dark blue-gray
 bold = true

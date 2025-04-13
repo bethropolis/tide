@@ -4,7 +4,10 @@ package app
 import (
 	"fmt" // Keep
 	// Keep for now
+	"strings"
+
 	"github.com/bethropolis/tide/internal/commands"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
@@ -153,19 +156,8 @@ func (api *appEditorAPI) GetThemeStyle(styleName string) tcell.Style {
 
 // SetTheme sets the active theme by name
 func (api *appEditorAPI) SetTheme(name string) error {
-	theme, ok := api.app.GetThemeManager().GetTheme(name)
-	if !ok {
-		return fmt.Errorf("theme '%s' not found", name)
-	}
-
-	// Set the theme in the app (which updates both the app's activeTheme and the global reference)
-	api.app.SetTheme(theme)
-
-	// Explicitly request a redraw to show the theme change immediately
-	api.app.requestRedraw()
-
-	logger.Debugf("Theme changed to '%s', redraw requested", name)
-	return nil
+	// Pass the theme name directly to SetTheme
+	return api.app.SetTheme(name)
 }
 
 // GetTheme returns the current active theme
@@ -200,4 +192,36 @@ func (api *appEditorAPI) RequestQuit(force bool) {
 			close(api.app.quit)
 		}
 	}
+}
+
+// GetPluginConfigValue retrieves a configuration value for a specific plugin.
+func (api *appEditorAPI) GetPluginConfigValue(pluginName, key string) (interface{}, bool) {
+	cfg := config.Get() // Get the loaded configuration
+
+	// Ensure plugin name lookup is case-insensitive
+	pluginNameLower := strings.ToLower(pluginName)
+
+	// Check if the [plugins] table exists
+	if cfg.Plugins == nil {
+		logger.Debugf("API: GetPluginConfigValue: No [plugins] table found in config.")
+		return nil, false
+	}
+
+	// Check if the specific plugin's config map exists
+	pluginConfig, pluginOk := cfg.Plugins[pluginNameLower]
+	if !pluginOk {
+		logger.Debugf("API: GetPluginConfigValue: No config found for plugin '%s'.", pluginName)
+		return nil, false
+	}
+
+	// Check if the key exists within the plugin's config map
+	value, keyOk := pluginConfig[key]
+	if !keyOk {
+		logger.Debugf("API: GetPluginConfigValue: Key '%s' not found for plugin '%s'.", key, pluginName)
+		return nil, false
+	}
+
+	// Return the found value
+	logger.Debugf("API: GetPluginConfigValue: Found value for plugin '%s', key '%s'.", pluginName, key)
+	return value, true
 }

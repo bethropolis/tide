@@ -18,3 +18,6 @@ mkdir -p ~/.apt-cross-toolchains
 echo "Installed on: $(date)" > ~/.apt-cross-toolchains/installed.txt
 
 echo "Cross-compiler installation completed successfully."
+
+
+# move image to hicolor

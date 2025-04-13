@@ -140,8 +140,7 @@ func (hm *HighlightingManager) runHighlightUpdate() {
 		}
 
 		// --- Perform Highlighting ---
-		// Pass language AND query bytes to HighlightBuffer
-		newHighlights, newTree, err := hm.highlighter.HighlightBuffer(taskCtx, buf, lang, queryBytes, oldTree)
+		newHighlights, newTree, err := hm.highlighter.HighlightBuffer(taskCtx, buf.Bytes(), lang, queryBytes, oldTree) // <<< Pass buf.Bytes()
 
 		// Check for errors or cancellation
 		if err != nil {

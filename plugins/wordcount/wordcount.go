@@ -4,6 +4,7 @@ package wordcount
 import (
 	"bytes" // Needed for word counting
 	"fmt"
+
 	"github.com/bethropolis/tide/internal/plugin" // Import the plugin interface definitions
 )
 
@@ -16,7 +17,7 @@ type WordCount struct {
 }
 
 // New creates a new instance of the WordCount plugin.
-func New() *WordCount {
+func New() plugin.Plugin {
 	return &WordCount{}
 }
 
