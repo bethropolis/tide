@@ -18,8 +18,8 @@ func (a *App) getActiveEditor() *core.Editor {
 }
 
 func (a *App) createEditor(filePath string) *core.Editor {
-	buf := buffer.NewSliceBuffer()
-	
+	buf := buffer.NewPieceTable()
+
 	if filePath != "" {
 		err := buf.Load(filePath)
 		if err != nil && !os.IsNotExist(err) {
@@ -29,7 +29,7 @@ func (a *App) createEditor(filePath string) *core.Editor {
 
 	editor := core.NewEditor(buf, a.highlighterService, a.requestRedraw)
 	editor.SetEventManager(a.eventManager)
-	
+
 	lang, queryBytes := a.highlighterService.GetLanguage(filePath)
 	if lang != nil {
 		initialCtx := context.Background()
@@ -122,7 +122,7 @@ func (a *App) ForceCloseBuffer() {
 	if a.activeEditorIndex >= len(a.editors) {
 		a.activeEditorIndex = len(a.editors) - 1
 	}
-	
+
 	if a.modeHandler != nil {
 		a.modeHandler.SetEditor(a.getActiveEditor())
 	}

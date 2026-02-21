@@ -51,7 +51,7 @@ func NewApp(filePath string) (*App, error) {
 		return nil, fmt.Errorf("TUI initialization failed: %w", err)
 	}
 
-	buf := buffer.NewSliceBuffer()
+	buf := buffer.NewPieceTable()
 	var _ buffer.Buffer = buf
 
 	loadErr := buf.Load(filePath)
