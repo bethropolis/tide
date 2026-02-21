@@ -27,6 +27,7 @@ const (
 	ActionInsertRune         // Requires Rune argument
 	ActionInsertNewLine      // Specific action for Enter
 	ActionInsertTab          // Specific action for Tab key
+	ActionInsertBacktab      // Specific action for Shift+Tab key
 	ActionDeleteCharForward  // Delete key
 	ActionDeleteCharBackward // Backspace key
 	ActionYank               // Copy selection to clipboard

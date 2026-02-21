@@ -49,6 +49,11 @@ type ModeHandler struct {
 	lastSearchForward bool
 	lastMatchPos      *types.Position
 
+	// Command Autocomplete State
+	cmdSuggestions   []string
+	cmdSuggestionIdx int
+	cmdOriginalBuf   string
+
 	// Leader Key State
 	leaderWaiting bool
 	leaderTimer   *time.Timer
@@ -84,6 +89,7 @@ func New(cfg Config) *ModeHandler {
 		currentMode:       ModeNormal,
 		commands:          make(map[string]plugin.CommandFunc),
 		cmdBuffer:         "",
+		cmdSuggestionIdx:  -1,
 		lastSearchForward: true, // Default search direction
 	}
 	mh.leaderKey = cfg.InputProcessor.GetLeaderKey() // Cache leader key
