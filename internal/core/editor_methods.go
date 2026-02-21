@@ -189,3 +189,20 @@ func (e *Editor) SaveBuffer(filePath ...string) error { // Use variadic string
 	}
 	return nil
 }
+
+// GetBufferCol returns the actual byte index for a visual screen column
+func (e *Editor) GetBufferCol(lineIdx int, visualCol int) int {
+	if e.cursorManager == nil {
+		return visualCol
+	}
+	if lineIdx < 0 || lineIdx >= e.buffer.LineCount() {
+		return visualCol
+	}
+
+	lineBytes, err := e.buffer.Line(lineIdx)
+	if err != nil {
+		return visualCol
+	}
+
+	return e.cursorManager.GetBufferCol(string(lineBytes), visualCol)
+}

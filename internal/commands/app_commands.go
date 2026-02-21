@@ -18,12 +18,13 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 
 	// :w [filename] - Write buffer to file
 	writeCmdFunc := func(args []string) error {
-		// TODO: Handle optional filename argument `args[0]`
-		// For now, just save to current path
+		var err error
 		if len(args) > 0 {
-			return fmt.Errorf(":w with filename not implemented yet")
+			filename := args[0]
+			err = api.SaveBuffer(filename)
+		} else {
+			err = api.SaveBuffer() // Save to current path
 		}
-		err := api.SaveBuffer() // API method calls editor.SaveBuffer
 		if err != nil {
 			return fmt.Errorf("failed to save buffer: %w", err) // Return error to show in status
 		}

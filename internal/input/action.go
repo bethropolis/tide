@@ -46,6 +46,7 @@ const (
 	ActionEnterFindMode // Trigger find mode (e.g., '/')
 	ActionFindNext      // Find next occurrence (e.g., 'n')
 	ActionFindPrevious  // Find previous occurrence (e.g., 'N')
+	ActionFuzzyFind     // Fuzzy find files
 
 	// --- Viewport / Other ---
 	// ActionScrollUp? ActionScrollDown? (Usually tied to cursor movement)

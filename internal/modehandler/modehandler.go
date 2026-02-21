@@ -81,6 +81,73 @@ func New(cfg Config) *ModeHandler {
 	return mh
 }
 
+// HandleMouseEvent processes mouse input events.
+func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
+	if mh.currentMode != ModeNormal {
+		return false // Currently only handling mouse in Normal mode
+	}
+
+	x, y := ev.Position()
+	button := ev.Buttons()
+
+	// Handle Scrolling
+	if button&tcell.WheelUp != 0 {
+		mh.editor.MoveCursor(-3, 0) // Scroll up 3 lines
+		return true
+	}
+	if button&tcell.WheelDown != 0 {
+		mh.editor.MoveCursor(3, 0) // Scroll down 3 lines
+		return true
+	}
+
+	// Handle Clicking (Button1 is left click)
+	if button&tcell.Button1 != 0 {
+		viewportY, viewportX := mh.editor.GetViewport()
+
+		targetLine := viewportY + y
+
+		buf := mh.editor.GetBuffer()
+		lineCount := buf.LineCount()
+
+		// Calculate gutter width exactly as it's done in drawing.go
+		lc := lineCount
+		if lc == 0 {
+			lc = 1
+		}
+
+		maxDigits := 1
+		for temp := lc; temp >= 10; temp /= 10 {
+			maxDigits++
+		}
+
+		lineNumberPadding := 1
+		gutterWidth := maxDigits + lineNumberPadding
+
+		// If click is in the gutter, ignore or select line
+		if x < gutterWidth {
+			// Clicked on line number, could select line
+			mh.editor.SetCursor(types.Position{Line: targetLine, Col: 0})
+			mh.editor.ClearSelection()
+			return true
+		}
+
+		// Calculate visual column clicked
+		visualCol := x - gutterWidth + viewportX
+		if visualCol < 0 {
+			visualCol = 0
+		}
+
+		// Translate visual column to actual byte column based on runes/tabs
+		targetCol := mh.editor.GetBufferCol(targetLine, visualCol)
+
+		mh.editor.SetCursor(types.Position{Line: targetLine, Col: targetCol})
+		mh.editor.ClearSelection()
+		return true
+	}
+
+	return false
+}
+
 // HandleKeyEvent decides what to do based on current mode and key event.
 // Returns true if the event resulted in an action requiring redraw.
 func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {

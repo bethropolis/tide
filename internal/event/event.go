@@ -29,7 +29,8 @@ const (
 
 	// Plugin specific events can be defined later or use custom data
 
-	TypeThemeChanged // Fired when the theme is changed
+	TypeThemeChanged     // Fired when the theme is changed
+	TypeTriggerFuzzyFind // Fired to open fuzzy finder
 )
 
 // Event is the structure passed through the event bus.
@@ -79,3 +80,6 @@ type ThemeChangedData struct {
 	OldThemeName string
 	NewThemeName string
 }
+
+// TriggerFuzzyFindData is empty for now
+type TriggerFuzzyFindData struct{}

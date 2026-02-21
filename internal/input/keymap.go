@@ -88,6 +88,7 @@ func (p *InputProcessor) loadDefaultBindings() {
 	// Map actions to keys that follow the leader key
 	p.leaderMap['/'] = ActionEnterFindMode    // <leader>/
 	p.leaderMap[':'] = ActionEnterCommandMode // <leader>:
+	p.leaderMap['f'] = ActionFuzzyFind        // <leader>f
 	p.leaderMap['n'] = ActionFindNext         // <leader>n
 	p.leaderMap['N'] = ActionFindPrevious     // <leader>N
 	p.leaderMap['w'] = ActionSave             // <leader>w (example alias for save)

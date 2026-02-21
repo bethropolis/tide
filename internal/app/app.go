@@ -20,6 +20,7 @@ import (
 	"github.com/bethropolis/tide/internal/statusbar"
 	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/tui"
+	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -36,6 +37,7 @@ type App struct {
 	highlighterService *highlighter.Highlighter
 	activeTheme        *theme.Theme
 	themeManager       *theme.Manager
+	fuzzyFinder        *tui.FuzzyFinder // Overlay
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -68,6 +70,39 @@ func NewApp(filePath string) (*App, error) {
 		quit:          make(chan struct{}),
 		redrawRequest: make(chan struct{}, 1),
 	}
+
+	appInstance.fuzzyFinder = tui.NewFuzzyFinder(func(selectedPath string) {
+		// Callback when a file is selected
+		logger.Infof("FuzzyFinder selected: %s", selectedPath)
+		// We'll need to load the buffer here
+		loadErr := appInstance.editor.GetBuffer().Load(selectedPath)
+		if loadErr == nil {
+			appInstance.filePath = selectedPath
+			appInstance.editor.SetCursor(types.Position{Line: 0, Col: 0})
+			appInstance.editor.ClearSelection()
+			appInstance.statusBar.SetTemporaryMessage("Loaded %s", selectedPath)
+
+			// Reload syntax highlighting for the new file
+			lang, queryBytes := appInstance.highlighterService.GetLanguage(selectedPath)
+			if lang != nil {
+				initialCtx := context.Background()
+				initialHighlights, initialTree, _ := appInstance.highlighterService.HighlightBuffer(initialCtx, appInstance.editor.GetBuffer().Bytes(), lang, queryBytes, nil)
+				if hm := appInstance.editor.GetHighlightManager(); hm != nil {
+					hm.UpdateHighlights(initialHighlights, initialTree)
+				}
+			} else {
+				if hm := appInstance.editor.GetHighlightManager(); hm != nil {
+					hm.ClearHighlights()
+				}
+			}
+
+			appInstance.requestRedraw()
+		} else {
+			appInstance.statusBar.SetTemporaryMessage("Error loading %s", selectedPath)
+			appInstance.requestRedraw()
+		}
+	})
+
 	appInstance.activeTheme = appInstance.themeManager.Current()
 
 	highlighterSvc := highlighter.NewHighlighter()
@@ -103,6 +138,15 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.eventManager.Subscribe(event.TypeBufferModified, appInstance.handleBufferModifiedForStatus)
 	appInstance.eventManager.Subscribe(event.TypeBufferSaved, appInstance.handleBufferSavedForStatus)
 	appInstance.eventManager.Subscribe(event.TypeBufferLoaded, appInstance.handleBufferLoadedForStatus)
+
+	appInstance.eventManager.Subscribe(event.TypeTriggerFuzzyFind, func(e event.Event) bool {
+		cwd, err := os.Getwd()
+		if err == nil && appInstance.fuzzyFinder != nil {
+			appInstance.fuzzyFinder.Toggle(cwd)
+			appInstance.requestRedraw()
+		}
+		return false
+	})
 
 	appInstance.eventManager.Subscribe(event.TypeBufferModified, func(e event.Event) bool {
 		if data, ok := e.Data.(event.BufferModifiedData); ok {
@@ -216,7 +260,14 @@ func (a *App) eventLoop() {
 			needsRedraw = true
 
 		case *tcell.EventKey:
-			needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
+			if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
+				needsRedraw = a.fuzzyFinder.HandleKeyEvent(eventData)
+			} else {
+				needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
+			}
+
+		case *tcell.EventMouse:
+			needsRedraw = a.modeHandler.HandleMouseEvent(eventData)
 		}
 
 		if needsRedraw {
@@ -366,7 +417,16 @@ func (a *App) drawEditor() {
 	a.statusBar.Draw(screen, w, h, a.activeTheme)
 
 	// Draw the cursor (position is calculated relative to buffer draw)
-	tui.DrawCursor(a.tuiManager, a.editor)
+	// Only draw cursor if not in an overlay that hides it
+	showCursor := true
+	if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
+		showCursor = false
+		a.fuzzyFinder.Draw(screen, a.activeTheme, w, h)
+	}
+
+	if showCursor {
+		tui.DrawCursor(a.tuiManager, a.editor)
+	}
 
 	// Refresh the screen to display changes
 	a.tuiManager.Show()
