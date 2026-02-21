@@ -57,6 +57,13 @@ type EditorAPI interface {
 	// --- Application Control ---
 	RequestQuit(force bool) // Signal the application to quit
 
+	// --- Buffer Management ---
+	OpenFile(filePath string)
+	NextBuffer()
+	PrevBuffer()
+	CloseBuffer() error
+	ForceCloseBuffer()
+
 	// --- Configuration ---
 	// GetPluginConfigValue retrieves a configuration value for a specific plugin.
 	// Keys within a plugin's config are case-sensitive as defined in the TOML.

@@ -41,33 +41,33 @@ func newEditorAPI(app *App) *appEditorAPI {
 func (api *appEditorAPI) GetBufferLines(startLine, endLine int) ([][]byte, error) {
 	// TODO: Implement range checking and slicing logic on app.editor.GetBuffer()
 	// For now, return all lines as a placeholder
-	return api.app.editor.GetBuffer().Lines(), nil
+	return api.app.getActiveEditor().GetBuffer().Lines(), nil
 }
 
 func (api *appEditorAPI) GetBufferLine(line int) ([]byte, error) {
-	return api.app.editor.GetBuffer().Line(line)
+	return api.app.getActiveEditor().GetBuffer().Line(line)
 }
 
 func (api *appEditorAPI) GetBufferLineCount() int {
-	return api.app.editor.GetBuffer().LineCount()
+	return api.app.getActiveEditor().GetBuffer().LineCount()
 }
 
 func (api *appEditorAPI) GetBufferFilePath() string {
-	return api.app.editor.GetBuffer().FilePath()
+	return api.app.getActiveEditor().GetBuffer().FilePath()
 }
 
 func (api *appEditorAPI) IsBufferModified() bool {
-	return api.app.editor.GetBuffer().IsModified()
+	return api.app.getActiveEditor().GetBuffer().IsModified()
 }
 
 func (api *appEditorAPI) GetBufferBytes() []byte {
-	return api.app.editor.GetBuffer().Bytes() // Delegate to buffer's Bytes()
+	return api.app.getActiveEditor().GetBuffer().Bytes() // Delegate to buffer's Bytes()
 }
 
 // --- Buffer Modification ---
 
 func (api *appEditorAPI) InsertText(pos types.Position, text []byte) error {
-	editInfo, err := api.app.editor.GetBuffer().Insert(pos, text) // Capture EditInfo
+	editInfo, err := api.app.getActiveEditor().GetBuffer().Insert(pos, text) // Capture EditInfo
 	if err == nil {
 		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		// We likely need to redraw if buffer changes via plugin
@@ -79,7 +79,7 @@ func (api *appEditorAPI) InsertText(pos types.Position, text []byte) error {
 
 func (api *appEditorAPI) DeleteRange(start, end types.Position) error {
 	// Similar delegation and considerations as InsertText
-	editInfo, err := api.app.editor.GetBuffer().Delete(start, end) // Capture EditInfo
+	editInfo, err := api.app.getActiveEditor().GetBuffer().Delete(start, end) // Capture EditInfo
 	if err == nil {
 		api.app.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
 		api.app.requestRedraw()
@@ -91,22 +91,22 @@ func (api *appEditorAPI) DeleteRange(start, end types.Position) error {
 // Replace implements the Replace method for substitution command
 func (api *appEditorAPI) Replace(pattern, replacement string, global bool) (int, error) {
 	// Delegate to editor's Replace method which delegates to findManager.Replace
-	return api.app.editor.Replace(pattern, replacement, global)
+	return api.app.getActiveEditor().Replace(pattern, replacement, global)
 }
 
 // --- Cursor & Viewport ---
 
 func (api *appEditorAPI) GetCursor() types.Position {
-	return api.app.editor.GetCursor()
+	return api.app.getActiveEditor().GetCursor()
 }
 
 func (api *appEditorAPI) SetCursor(pos types.Position) {
-	api.app.editor.SetCursor(pos) // Editor's method handles clamping/scrolling/events
-	api.app.requestRedraw()       // Ensure redraw happens after API call sets cursor
+	api.app.getActiveEditor().SetCursor(pos) // Editor's method handles clamping/scrolling/events
+	api.app.requestRedraw()                  // Ensure redraw happens after API call sets cursor
 }
 
 func (api *appEditorAPI) GetViewport() (int, int) {
-	return api.app.editor.GetViewport()
+	return api.app.getActiveEditor().GetViewport()
 }
 
 // --- Event Bus Interaction ---
@@ -173,7 +173,27 @@ func (api *appEditorAPI) ListThemes() []string {
 // SaveBuffer saves the current buffer to disk, optionally to a new filename
 func (api *appEditorAPI) SaveBuffer(filePath ...string) error {
 	// Delegate to editor method, passing arguments through
-	return api.app.editor.SaveBuffer(filePath...)
+	return api.app.getActiveEditor().SaveBuffer(filePath...)
+}
+
+func (api *appEditorAPI) OpenFile(filePath string) {
+	api.app.OpenFile(filePath)
+}
+
+func (api *appEditorAPI) NextBuffer() {
+	api.app.NextBuffer()
+}
+
+func (api *appEditorAPI) PrevBuffer() {
+	api.app.PrevBuffer()
+}
+
+func (api *appEditorAPI) CloseBuffer() error {
+	return api.app.CloseBuffer()
+}
+
+func (api *appEditorAPI) ForceCloseBuffer() {
+	api.app.ForceCloseBuffer()
 }
 
 // RequestQuit signals the application to quit
@@ -183,7 +203,7 @@ func (api *appEditorAPI) RequestQuit(force bool) {
 		close(api.app.quit) // Close directly if forced
 	} else {
 		// Check modified status via buffer
-		if api.app.editor.GetBuffer().IsModified() {
+		if api.app.getActiveEditor().GetBuffer().IsModified() {
 			logger.Debugf("API: Quit requested, but buffer modified. Setting status.")
 			api.SetStatusMessage("No write since last change (use :q! or force quit key)")
 			// Don't close the channel here. Let the command fail.

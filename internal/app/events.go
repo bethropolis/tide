@@ -36,7 +36,7 @@ func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
 	// only be needed if loading *into* an existing editor instance (e.g., :e command)
 	// For now, let's assume initial highlight covers the load case.
 	// If async highlighting is desired *after* load, we might need:
-	if hm := a.editor.GetHighlightManager(); hm != nil {
+	if hm := a.getActiveEditor().GetHighlightManager(); hm != nil {
 		// Maybe trigger a full re-highlight async?
 		// hm.AccumulateEdit(types.EditInfo{}) // Or a dedicated method?
 		logger.Debugf("App: Buffer loaded, relying on initial sync highlight or subsequent edits.")

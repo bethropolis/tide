@@ -20,20 +20,19 @@ import (
 	"github.com/bethropolis/tide/internal/statusbar"
 	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/tui"
-	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
 
 // App encapsulates the core components and main loop of the editor.
 type App struct {
 	tuiManager         *tui.TUI
-	editor             *core.Editor
+	editors            []*core.Editor
+	activeEditorIndex  int
 	statusBar          *statusbar.StatusBar
 	eventManager       *event.Manager
 	pluginManager      *plugin.Manager
 	modeHandler        *modehandler.ModeHandler
 	editorAPI          plugin.EditorAPI
-	filePath           string
 	highlighterService *highlighter.Highlighter
 	activeTheme        *theme.Theme
 	themeManager       *theme.Manager
@@ -65,7 +64,6 @@ func NewApp(filePath string) (*App, error) {
 		statusBar:     statusbar.New(statusbar.DefaultConfig()),
 		eventManager:  event.NewManager(),
 		pluginManager: plugin.NewManager(),
-		filePath:      filePath,
 		themeManager:  theme.NewManager(),
 		quit:          make(chan struct{}),
 		redrawRequest: make(chan struct{}, 1),
@@ -74,33 +72,8 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.fuzzyFinder = tui.NewFuzzyFinder(func(selectedPath string) {
 		// Callback when a file is selected
 		logger.Infof("FuzzyFinder selected: %s", selectedPath)
-		// We'll need to load the buffer here
-		loadErr := appInstance.editor.GetBuffer().Load(selectedPath)
-		if loadErr == nil {
-			appInstance.filePath = selectedPath
-			appInstance.editor.SetCursor(types.Position{Line: 0, Col: 0})
-			appInstance.editor.ClearSelection()
-			appInstance.statusBar.SetTemporaryMessage("Loaded %s", selectedPath)
-
-			// Reload syntax highlighting for the new file
-			lang, queryBytes := appInstance.highlighterService.GetLanguage(selectedPath)
-			if lang != nil {
-				initialCtx := context.Background()
-				initialHighlights, initialTree, _ := appInstance.highlighterService.HighlightBuffer(initialCtx, appInstance.editor.GetBuffer().Bytes(), lang, queryBytes, nil)
-				if hm := appInstance.editor.GetHighlightManager(); hm != nil {
-					hm.UpdateHighlights(initialHighlights, initialTree)
-				}
-			} else {
-				if hm := appInstance.editor.GetHighlightManager(); hm != nil {
-					hm.ClearHighlights()
-				}
-			}
-
-			appInstance.requestRedraw()
-		} else {
-			appInstance.statusBar.SetTemporaryMessage("Error loading %s", selectedPath)
-			appInstance.requestRedraw()
-		}
+		// Open the file in a new buffer (or switch to it)
+		appInstance.OpenFile(selectedPath)
 	})
 
 	appInstance.activeTheme = appInstance.themeManager.Current()
@@ -108,8 +81,9 @@ func NewApp(filePath string) (*App, error) {
 	highlighterSvc := highlighter.NewHighlighter()
 	appInstance.highlighterService = highlighterSvc
 
-	editor := core.NewEditor(buf, highlighterSvc, appInstance.requestRedraw)
-	appInstance.editor = editor
+	editor := appInstance.createEditor(filePath)
+	appInstance.editors = append(appInstance.editors, editor)
+	appInstance.activeEditorIndex = 0
 
 	inputProcessor := input.NewInputProcessor()
 	modeHandlerCfg := modehandler.Config{
@@ -150,7 +124,7 @@ func NewApp(filePath string) (*App, error) {
 
 	appInstance.eventManager.Subscribe(event.TypeBufferModified, func(e event.Event) bool {
 		if data, ok := e.Data.(event.BufferModifiedData); ok {
-			if hm := appInstance.editor.GetHighlightManager(); hm != nil {
+			if hm := appInstance.getActiveEditor().GetHighlightManager(); hm != nil {
 				logger.DebugTagf("highlight", "App: Forwarding BufferModified event to core highlight manager")
 				hm.AccumulateEdit(data.Edit)
 			} else {
@@ -211,8 +185,10 @@ func NewApp(filePath string) (*App, error) {
 // Run starts the application's main event and drawing loops.
 func (a *App) Run() error {
 	defer func() {
-		if hm := a.editor.GetHighlightManager(); hm != nil {
-			hm.Shutdown()
+		if ed := a.getActiveEditor(); ed != nil {
+			if hm := ed.GetHighlightManager(); hm != nil {
+				hm.Shutdown()
+			}
 		}
 		a.pluginManager.ShutdownPlugins()
 		a.tuiManager.Close()
@@ -230,14 +206,16 @@ func (a *App) Run() error {
 		case <-a.quit:
 			logger.Infof("Quit signal received.")
 			a.eventManager.Dispatch(event.TypeAppQuit, event.AppQuitData{})
-			if a.editor.GetBuffer().IsModified() {
+			if ed := a.getActiveEditor(); ed != nil && ed.GetBuffer().IsModified() {
 				logger.Warnf("Exited with unsaved changes.")
 				fmt.Fprintln(os.Stderr, "Warning: Exited with unsaved changes.")
 			}
 			return nil
 		case <-a.redrawRequest:
 			w, h := a.tuiManager.Size()
-			a.editor.SetViewSize(w, h)
+			if ed := a.getActiveEditor(); ed != nil {
+				ed.SetViewSize(w, h)
+			}
 			a.drawEditor()
 		}
 	}
@@ -371,9 +349,13 @@ func (a *App) requestRedraw() {
 
 // updateStatusBarContent pushes current editor state to the status bar component.
 func (a *App) updateStatusBarContent() {
-	buffer := a.editor.GetBuffer()
+	ed := a.getActiveEditor()
+	if ed == nil {
+		return
+	}
+	buffer := ed.GetBuffer()
 	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
-	a.statusBar.SetCursorInfo(a.editor.GetCursor())
+	a.statusBar.SetCursorInfo(ed.GetCursor())
 
 	// Get mode string and potentially command/find buffer from ModeHandler
 	modeStr := a.modeHandler.GetCurrentModeString()
@@ -394,7 +376,8 @@ func (a *App) updateStatusBarContent() {
 // drawEditor handles rendering the editor's content, including the status bar.
 func (a *App) drawEditor() {
 	// Ensure the TUI manager and editor are initialized
-	if a.tuiManager == nil || a.editor == nil || a.statusBar == nil {
+	ed := a.getActiveEditor()
+	if a.tuiManager == nil || ed == nil || a.statusBar == nil {
 		logger.Warnf("drawEditor: TUI manager, editor, or status bar is not initialized")
 		return
 	}
@@ -411,7 +394,7 @@ func (a *App) drawEditor() {
 	a.tuiManager.Clear()
 
 	// Draw the buffer content
-	tui.DrawBuffer(a.tuiManager, a.editor, a.activeTheme)
+	tui.DrawBuffer(a.tuiManager, ed, a.activeTheme)
 
 	// Draw the status bar
 	a.statusBar.Draw(screen, w, h, a.activeTheme)
@@ -425,7 +408,7 @@ func (a *App) drawEditor() {
 	}
 
 	if showCursor {
-		tui.DrawCursor(a.tuiManager, a.editor)
+		tui.DrawCursor(a.tuiManager, ed)
 	}
 
 	// Refresh the screen to display changes

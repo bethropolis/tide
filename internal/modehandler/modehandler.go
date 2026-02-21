@@ -63,6 +63,12 @@ type Config struct {
 }
 
 // New creates a new ModeHandler.
+// SetEditor updates the active editor
+func (mh *ModeHandler) SetEditor(e *core.Editor) {
+	mh.editor = e
+}
+
+// New creates and returns a new ModeHandler.
 func New(cfg Config) *ModeHandler {
 	if cfg.Editor == nil || cfg.InputProcessor == nil || cfg.EventManager == nil || cfg.StatusBar == nil || cfg.QuitSignal == nil {
 		panic("modehandler.New: Missing required dependencies in Config")
