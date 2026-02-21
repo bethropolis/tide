@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/bethropolis/tide/internal/theme"
 	"github.com/gdamore/tcell/v2"
-	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 )
 
 // Overlay represents a floating UI element
@@ -41,15 +41,24 @@ func DrawBox(screen tcell.Screen, x, y, width, height int, style tcell.Style) {
 	}
 }
 
-// DrawText is a utility to draw text at a given position, truncated to a max width
+// DrawText draws text at a given position, truncated to maxWidth visual columns.
+// Uses uniseg for grapheme-cluster-aware width measurement (consistent with DrawBuffer).
 func DrawText(screen tcell.Screen, x, y, maxWidth int, text string, style tcell.Style) {
 	col := x
-	for _, r := range text {
-		w := runewidth.RuneWidth(r)
+	gr := uniseg.NewGraphemes(text)
+	for gr.Next() {
+		w := gr.Width()
 		if col-x+w > maxWidth {
 			break
 		}
-		screen.SetContent(col, y, r, nil, style)
+		runes := gr.Runes()
+		if len(runes) > 0 {
+			screen.SetContent(col, y, runes[0], runes[1:], style)
+			// Fill extra cells for wide characters
+			for i := 1; i < w; i++ {
+				screen.SetContent(col+i, y, ' ', nil, style)
+			}
+		}
 		col += w
 	}
 }

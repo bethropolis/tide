@@ -304,8 +304,13 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 		case 'v':
 			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
 		case 'V':
-			// Line-wise visual mode not fully implemented yet, treating as standard visual mode
-			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
+			// Enter line-wise visual mode
+			mh.editor.StartOrUpdateSelection()
+			mh.editor.SetLinewise(true)
+			mh.currentMode = ModeVisualLine
+			mh.statusBar.SetTemporaryMessage("-- VISUAL LINE --")
+			logger.Debugf("ModeHandler: Entering Visual Line Mode")
+			return true
 		case 'A':
 			// Move to end of line and insert
 			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
@@ -334,11 +339,17 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 		case 'l':
 			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
 		case 'w':
-			// TODO: Implement proper word movement, for now move right
-			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+			mh.editor.WordForward()
+			return true
 		case 'b':
-			// TODO: Implement proper word movement, for now move left
-			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+			mh.editor.WordBackward()
+			return true
+		case 'e':
+			mh.editor.WordEnd()
+			return true
+		case '0':
+			mh.editor.HardHome()
+			return true
 		case 'x':
 			return mh.executeAction(input.ActionDeleteCharForward, input.ActionEvent{Action: input.ActionDeleteCharForward}, ev)
 		case 'u':
@@ -383,6 +394,91 @@ func (mh *ModeHandler) handleActionVisual(actionEvent input.ActionEvent, ev *tce
 	}
 
 	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward || (actionEvent.Action == input.ActionInsertRune && (actionEvent.Rune == 'd' || actionEvent.Rune == 'x')) {
+		res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	return false
+}
+
+// handleActionVisualLine handles key events in line-wise Visual Mode (Vim 'V').
+func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	// ESC → back to Normal
+	if actionEvent.Action == input.ActionQuit {
+		mh.editor.ClearSelection()
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+
+	// Movement: update line-wise selection (cursor moves, selection follows)
+	isMovement := actionEvent.Action >= input.ActionMoveUp && actionEvent.Action <= input.ActionMoveEnd
+	if isMovement {
+		mockShiftEv := tcell.NewEventKey(ev.Key(), ev.Rune(), ev.Modifiers()|tcell.ModShift)
+		res := mh.executeAction(actionEvent.Action, actionEvent, mockShiftEv)
+		// Ensure linewise flag stays set after movement (executeAction may reset via ClearSelection)
+		mh.editor.SetLinewise(true)
+		return res
+	}
+
+	// Rune-based movement (hjkl, w, b, e, 0)
+	if actionEvent.Action == input.ActionInsertRune {
+		switch actionEvent.Rune {
+		case 'h':
+			mh.editor.MoveCursor(0, -1)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'j':
+			mh.editor.MoveCursor(1, 0)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'k':
+			mh.editor.MoveCursor(-1, 0)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'l':
+			mh.editor.MoveCursor(0, 1)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'w':
+			mh.editor.WordForward()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'b':
+			mh.editor.WordBackward()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'e':
+			mh.editor.WordEnd()
+			mh.editor.SetLinewise(true)
+			return true
+		case '0':
+			mh.editor.HardHome()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'y':
+			// Yank selected lines then return to Normal
+			res := mh.executeAction(input.ActionYank, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'd', 'x':
+			// Delete selected lines then return to Normal
+			res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		}
+	}
+
+	// Yank/Delete via actions
+	if actionEvent.Action == input.ActionYank {
+		res := mh.executeAction(input.ActionYank, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward {
 		res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
 		mh.editor.ClearSelection()
 		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)

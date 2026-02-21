@@ -10,6 +10,7 @@ import (
 
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/commands"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/highlighter"
@@ -139,7 +140,7 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.pluginManager.InitializePlugins(appInstance.editorAPI)
 
 	width, height := tuiManager.Size()
-	editor.SetViewSize(width, height)
+	editor.SetViewSize(width, height-config.StatusBarHeight)
 
 	logger.DebugTagf("highlight", "App: Beginning initial synchronous syntax highlight process...")
 	lang, queryBytes := appInstance.highlighterService.GetLanguage(filePath)
@@ -214,7 +215,7 @@ func (a *App) Run() error {
 		case <-a.redrawRequest:
 			w, h := a.tuiManager.Size()
 			if ed := a.getActiveEditor(); ed != nil {
-				ed.SetViewSize(w, h)
+				ed.SetViewSize(w, h-config.StatusBarHeight)
 			}
 			a.drawEditor()
 		}
@@ -387,6 +388,16 @@ func (a *App) drawEditor() {
 	w, h := a.tuiManager.Size()
 	a.activeTheme = a.themeManager.Current() // Ensure we have the latest theme
 
+	// Determine if we should draw a tab bar (only with 2+ buffers)
+	multiBuffer := len(a.editors) > 1
+	totalBarHeight := config.StatusBarHeight
+	if multiBuffer {
+		totalBarHeight++ // Extra row for tab bar
+	}
+
+	// Ensure the editor view accounts for all UI rows
+	ed.SetViewSize(w, h-totalBarHeight)
+
 	// Update status bar content *before* drawing anything
 	a.updateStatusBarContent() // Update the status bar with latest info
 
@@ -395,6 +406,11 @@ func (a *App) drawEditor() {
 
 	// Draw the buffer content
 	tui.DrawBuffer(a.tuiManager, ed, a.activeTheme)
+
+	// Draw tab bar if multiple buffers are open
+	if multiBuffer {
+		a.drawTabBar(screen, w, h-totalBarHeight)
+	}
 
 	// Draw the status bar
 	a.statusBar.Draw(screen, w, h, a.activeTheme)
@@ -413,4 +429,61 @@ func (a *App) drawEditor() {
 
 	// Refresh the screen to display changes
 	a.tuiManager.Show()
+}
+
+// drawTabBar renders a row of buffer tabs just above the status bar.
+// tabY is the row on which the tab bar is drawn.
+func (a *App) drawTabBar(screen tcell.Screen, w, tabY int) {
+	th := a.activeTheme
+	activeStyle := th.GetStyle("StatusBar.Mode.Normal").Reverse(false) // active tab: highlighted
+	inactiveStyle := th.GetStyle("StatusBar")                          // inactive tab: base style
+	modifiedStyle := th.GetStyle("StatusBar.Modified")                 // modified marker
+
+	// Fill the row with base style first
+	for x := 0; x < w; x++ {
+		screen.SetContent(x, tabY, ' ', nil, inactiveStyle)
+	}
+
+	x := 0
+	for i, ed := range a.editors {
+		name := ed.GetBuffer().FilePath()
+		if name == "" {
+			name = "[No Name]"
+		} else {
+			// Shorten to basename
+			for j := len(name) - 1; j >= 0; j-- {
+				if name[j] == '/' || name[j] == '\\' {
+					name = name[j+1:]
+					break
+				}
+			}
+		}
+
+		label := " " + name + " "
+		if ed.GetBuffer().IsModified() {
+			label = " " + name + "* "
+		}
+
+		style := inactiveStyle
+		if i == a.activeEditorIndex {
+			style = activeStyle
+		}
+
+		_ = modifiedStyle // used inline via label suffix above
+
+		// Draw the tab label
+		for _, r := range label {
+			if x >= w {
+				break
+			}
+			screen.SetContent(x, tabY, r, nil, style)
+			x++
+		}
+
+		// Separator between tabs
+		if i < len(a.editors)-1 && x < w {
+			screen.SetContent(x, tabY, '│', nil, inactiveStyle)
+			x++
+		}
+	}
 }

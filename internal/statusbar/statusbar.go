@@ -182,10 +182,11 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int, activeTheme *t
 		// Prepare right-aligned segments (calculate their total width first)
 		cursorStr := fmt.Sprintf("Line: %d, Col: %d", cursor.Line+1, cursor.Col+1)
 		modeStr := strings.ToUpper(mode)
+		modePill := " " + modeStr + " " // padded pill label
 		separator := " -- "
 
 		cursorWidth := uniseg.StringWidth(cursorStr)
-		modeWidth := uniseg.StringWidth(modeStr)
+		modeWidth := uniseg.StringWidth(modePill)
 		separatorWidth := uniseg.StringWidth(separator)
 
 		// Calculate start position for right-aligned block
@@ -201,9 +202,11 @@ func (sb *StatusBar) Draw(screen tcell.Screen, width, height int, activeTheme *t
 			// 4. Separator
 			currentX = drawSegment(screen, currentX, y, separator, baseStyle, width)
 
-			// 5. Mode
-			modeStyle := activeTheme.GetStyle("StatusBar.Mode")
-			drawSegment(screen, currentX, y, modeStr, modeStyle, width)
+			// 5. Mode — padded pill with per-mode colour
+			// Build style key: strip spaces so "VISUAL LINE" → "StatusBar.Mode.Visualline"
+			modeStyleKey := "StatusBar.Mode." + strings.Title(strings.ReplaceAll(strings.ToLower(modeStr), " ", ""))
+			modeStyle := activeTheme.GetStyle(modeStyleKey)
+			drawSegment(screen, currentX, y, modePill, modeStyle, width)
 		} else {
 			// Not enough space, maybe just draw cursor info if possible
 			rightStartX = width - cursorWidth

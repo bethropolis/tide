@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/bethropolis/tide/internal/buffer"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/logger"
 )
@@ -40,7 +41,7 @@ func (a *App) createEditor(filePath string) *core.Editor {
 	}
 
 	w, h := a.tuiManager.Size()
-	editor.SetViewSize(w, h)
+	editor.SetViewSize(w, h-config.StatusBarHeight)
 	return editor
 }
 

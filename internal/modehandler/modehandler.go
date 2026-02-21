@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
@@ -24,6 +25,7 @@ const (
 	ModeCommand
 	ModeFind
 	ModeVisual
+	ModeVisualLine // Line-wise visual mode (Vim 'V')
 )
 
 // ModeHandler manages input modes, command execution, and related state.
@@ -116,19 +118,8 @@ func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
 		buf := mh.editor.GetBuffer()
 		lineCount := buf.LineCount()
 
-		// Calculate gutter width exactly as it's done in drawing.go
-		lc := lineCount
-		if lc == 0 {
-			lc = 1
-		}
-
-		maxDigits := 1
-		for temp := lc; temp >= 10; temp /= 10 {
-			maxDigits++
-		}
-
-		lineNumberPadding := 1
-		gutterWidth := maxDigits + lineNumberPadding
+		// Calculate gutter width using shared helper (use large screen width to avoid overflow-to-0)
+		gutterWidth := config.GutterWidth(lineCount, 1<<20)
 
 		// If click is in the gutter, ignore or select line
 		if x < gutterWidth {
@@ -217,6 +208,8 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 		actionProcessed = mh.handleActionInsert(actionEvent, ev)
 	case ModeVisual:
 		actionProcessed = mh.handleActionVisual(actionEvent, ev)
+	case ModeVisualLine:
+		actionProcessed = mh.handleActionVisualLine(actionEvent, ev)
 	case ModeCommand:
 		actionProcessed = mh.handleActionCommand(actionEvent)
 	case ModeFind:
@@ -257,6 +250,8 @@ func (mh *ModeHandler) GetCurrentModeString() string {
 		return "INSERT"
 	case ModeVisual:
 		return "VISUAL"
+	case ModeVisualLine:
+		return "VISUAL LINE"
 	case ModeCommand:
 		return "COMMAND"
 	case ModeFind:
