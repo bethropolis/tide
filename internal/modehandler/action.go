@@ -303,6 +303,28 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'v':
 			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
+		case 'V':
+			// Line-wise visual mode not fully implemented yet, treating as standard visual mode
+			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
+		case 'A':
+			// Move to end of line and insert
+			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'I':
+			// Move to start of line and insert
+			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'o':
+			// Insert line below and insert
+			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
+			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'O':
+			// Insert line above and insert
+			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
+			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
+			mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'h':
 			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
 		case 'j':
@@ -311,6 +333,12 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 			return mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
 		case 'l':
 			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+		case 'w':
+			// TODO: Implement proper word movement, for now move right
+			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+		case 'b':
+			// TODO: Implement proper word movement, for now move left
+			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
 		case 'x':
 			return mh.executeAction(input.ActionDeleteCharForward, input.ActionEvent{Action: input.ActionDeleteCharForward}, ev)
 		case 'u':
