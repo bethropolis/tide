@@ -130,8 +130,10 @@ func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 		return ActionEvent{Action: action} // Return the base action (e.g., ActionMoveUp)
 	}
 
-	// 3. Check Rune mappings (like ':') - Keep this
-	if key == tcell.KeyRune && mod == tcell.ModNone { // Only handle plain runes here
+	// 3. Check Rune mappings
+	// Note: We don't check for ModNone here because Shift might be applied
+	// for uppercase letters or symbols (like ':'). Ctrl and Alt are handled above.
+	if key == tcell.KeyRune {
 		if action, ok := p.runeKeymap[runeVal]; ok {
 			return ActionEvent{Action: action, Rune: runeVal}
 		}
