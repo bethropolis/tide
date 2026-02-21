@@ -11,6 +11,7 @@ require (
 require (
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 )
 
 require (
