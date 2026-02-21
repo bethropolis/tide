@@ -36,6 +36,9 @@ const (
 	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward
 
 	// --- Editor Mode ---
+	ActionEnterNormalMode   // Special action to return to Normal Mode
+	ActionEnterInsertMode   // Special action for 'i', 'a', etc.
+	ActionEnterVisualMode   // Special action for 'v'
 	ActionEnterCommandMode  // Special action for ':'
 	ActionExecuteCommand    // Special action for Enter in Command Mode
 	ActionCancelCommand     // Special action for Esc in Command Mode

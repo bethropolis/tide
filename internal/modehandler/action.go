@@ -35,13 +35,31 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	}
 
 	// Handle selection clear based on non-Shift movement
-	if isMovementAction && !isShift {
+	if isMovementAction && !isShift && mh.currentMode != ModeVisual {
 		mh.editor.ClearSelection()
 	}
 
 	// Execute the action
 	switch action {
 	// Mode Switching
+	case input.ActionEnterInsertMode:
+		mh.editor.ClearSelection()
+		mh.currentMode = ModeInsert
+		mh.statusBar.SetTemporaryMessage("-- INSERT --")
+		logger.Debugf("ModeHandler: Entering Insert Mode")
+
+	case input.ActionEnterNormalMode:
+		mh.editor.ClearSelection()
+		mh.currentMode = ModeNormal
+		mh.statusBar.SetTemporaryMessage("-- NORMAL --")
+		logger.Debugf("ModeHandler: Entering Normal Mode")
+
+	case input.ActionEnterVisualMode:
+		mh.editor.StartOrUpdateSelection()
+		mh.currentMode = ModeVisual
+		mh.statusBar.SetTemporaryMessage("-- VISUAL --")
+		logger.Debugf("ModeHandler: Entering Visual Mode")
+
 	case input.ActionEnterCommandMode:
 		mh.editor.ClearSelection()
 		mh.currentMode = ModeCommand
@@ -260,4 +278,88 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	}
 
 	return actionProcessed
+}
+
+// handleActionInsert handles key events specific to Insert Mode.
+func (mh *ModeHandler) handleActionInsert(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action == input.ActionQuit {
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+	return mh.executeAction(actionEvent.Action, actionEvent, ev)
+}
+
+// handleActionNormal handles key events specific to Normal Mode.
+func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action != input.ActionInsertRune && actionEvent.Action != input.ActionUnknown {
+		return mh.executeAction(actionEvent.Action, actionEvent, ev)
+	}
+
+	if actionEvent.Action == input.ActionInsertRune {
+		switch actionEvent.Rune {
+		case 'i':
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'a':
+			mh.editor.MoveCursor(0, 1)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'v':
+			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
+		case 'h':
+			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+		case 'j':
+			return mh.executeAction(input.ActionMoveDown, input.ActionEvent{Action: input.ActionMoveDown}, ev)
+		case 'k':
+			return mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+		case 'l':
+			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+		case 'x':
+			return mh.executeAction(input.ActionDeleteCharForward, input.ActionEvent{Action: input.ActionDeleteCharForward}, ev)
+		case 'u':
+			return mh.executeAction(input.ActionUndo, input.ActionEvent{Action: input.ActionUndo}, ev)
+		case 'p':
+			return mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
+		case 'y':
+			if ev.Modifiers() == tcell.ModNone {
+				mh.statusBar.SetTemporaryMessage("Use 'v' visual mode to select, then 'y' to yank")
+				return true
+			}
+		case '/':
+			return mh.executeAction(input.ActionEnterFindMode, input.ActionEvent{Action: input.ActionEnterFindMode}, ev)
+		case ':':
+			return mh.executeAction(input.ActionEnterCommandMode, input.ActionEvent{Action: input.ActionEnterCommandMode}, ev)
+		}
+
+		mh.statusBar.SetTemporaryMessage("Unmapped key in Normal mode: %c", actionEvent.Rune)
+		return true
+	}
+
+	return false
+}
+
+// handleActionVisual handles key events specific to Visual Mode.
+func (mh *ModeHandler) handleActionVisual(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action == input.ActionQuit {
+		mh.editor.ClearSelection()
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+
+	if actionEvent.Action >= input.ActionMoveUp && actionEvent.Action <= input.ActionMoveEnd {
+		mockShiftEv := tcell.NewEventKey(ev.Key(), ev.Rune(), ev.Modifiers()|tcell.ModShift)
+		return mh.executeAction(actionEvent.Action, actionEvent, mockShiftEv)
+	}
+
+	if actionEvent.Action == input.ActionYank || (actionEvent.Action == input.ActionInsertRune && actionEvent.Rune == 'y') {
+		res := mh.executeAction(input.ActionYank, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward || (actionEvent.Action == input.ActionInsertRune && (actionEvent.Rune == 'd' || actionEvent.Rune == 'x')) {
+		res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	return false
 }

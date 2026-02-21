@@ -20,9 +20,10 @@ type InputMode int
 
 const (
 	ModeNormal InputMode = iota
+	ModeInsert
 	ModeCommand
 	ModeFind
-	// Future: ModeInsert, ModeVisual, etc.
+	ModeVisual
 )
 
 // ModeHandler manages input modes, command execution, and related state.
@@ -205,7 +206,11 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 	// --- Normal Action Processing ---
 	switch mh.currentMode {
 	case ModeNormal:
-		actionProcessed = mh.executeAction(actionEvent.Action, actionEvent, ev)
+		actionProcessed = mh.handleActionNormal(actionEvent, ev)
+	case ModeInsert:
+		actionProcessed = mh.handleActionInsert(actionEvent, ev)
+	case ModeVisual:
+		actionProcessed = mh.handleActionVisual(actionEvent, ev)
 	case ModeCommand:
 		actionProcessed = mh.handleActionCommand(actionEvent)
 	case ModeFind:
@@ -242,6 +247,10 @@ func (mh *ModeHandler) GetCurrentModeString() string {
 	switch mh.currentMode {
 	case ModeNormal:
 		return "NORMAL"
+	case ModeInsert:
+		return "INSERT"
+	case ModeVisual:
+		return "VISUAL"
 	case ModeCommand:
 		return "COMMAND"
 	case ModeFind:
