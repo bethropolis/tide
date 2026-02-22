@@ -1,7 +1,6 @@
 package text
 
 import (
-	"bytes"
 	"fmt"
 	"unicode/utf8"
 
@@ -444,64 +443,6 @@ func (o *Operations) DeleteForward() error {
 }
 
 // extractTextFromRange gets the text content between start and end positions
-// This improved version uses ByteOffsetToRuneIndex and RuneIndexToByteOffset for accuracy
 func (o *Operations) extractTextFromRange(start, end types.Position) ([]byte, error) {
-	buf := o.editor.GetBuffer()
-	var content bytes.Buffer
-
-	// For single line selection
-	if start.Line == end.Line {
-		lineBytes, err := buf.Line(start.Line)
-		if err != nil {
-			return nil, fmt.Errorf("cannot get line %d: %w", start.Line, err)
-		}
-
-		// Convert rune indices to byte indices
-		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
-		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
-
-		// Make sure indices are valid
-		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset <= endByteOffset && endByteOffset <= len(lineBytes) {
-			content.Write(lineBytes[startByteOffset:endByteOffset])
-		} else {
-			return nil, fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, cols %d-%d",
-				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
-		}
-		return content.Bytes(), nil
-	}
-
-	// For multi-line selection
-	for lineIdx := start.Line; lineIdx <= end.Line; lineIdx++ {
-		lineBytes, err := buf.Line(lineIdx)
-		if err != nil {
-			return nil, fmt.Errorf("cannot get line %d: %w", lineIdx, err)
-		}
-
-		if lineIdx == start.Line {
-			// First line - from start.Col to end of line
-			startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
-			if startByteOffset >= 0 && startByteOffset <= len(lineBytes) {
-				content.Write(lineBytes[startByteOffset:])
-				content.WriteByte('\n') // Add newline after first line
-			} else {
-				return nil, fmt.Errorf("invalid start byte offset %d for line %d, col %d",
-					startByteOffset, start.Line, start.Col)
-			}
-		} else if lineIdx == end.Line {
-			// Last line - from beginning to end.Col
-			endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
-			if endByteOffset >= 0 && endByteOffset <= len(lineBytes) {
-				content.Write(lineBytes[:endByteOffset])
-			} else {
-				return nil, fmt.Errorf("invalid end byte offset %d for line %d, col %d",
-					endByteOffset, end.Line, end.Col)
-			}
-		} else {
-			// Middle lines - entire line plus newline
-			content.Write(lineBytes)
-			content.WriteByte('\n')
-		}
-	}
-
-	return content.Bytes(), nil
+	return []byte(o.editor.GetBuffer().GetText(start, end)), nil
 }

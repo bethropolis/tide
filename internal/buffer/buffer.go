@@ -12,6 +12,7 @@ type Buffer interface {
 	// Methods now return EditInfo
 	Insert(pos types.Position, text []byte) (types.EditInfo, error)
 	Delete(start, end types.Position) (types.EditInfo, error)
+	GetText(start, end types.Position) string
 	Save(filePath string) error
 	Bytes() []byte
 	FilePath() string

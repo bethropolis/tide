@@ -58,6 +58,9 @@ type ModeHandler struct {
 	leaderWaiting bool
 	leaderTimer   *time.Timer
 	leaderKey     rune
+
+	// Multi-key operator state
+	pendingOperator rune
 }
 
 // Config holds dependencies for the ModeHandler.

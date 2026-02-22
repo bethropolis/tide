@@ -159,8 +159,33 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 			mh.statusBar.SetTemporaryMessage("Nothing selected to copy")
 		}
 
+	case input.ActionCut:
+		cut, err := mh.editor.CutSelection()
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Cut failed: %v", err)
+			logger.Debugf("Cut error: %v", err)
+			actionProcessed = false
+		} else if cut {
+			mh.statusBar.SetTemporaryMessage("Text cut to clipboard")
+		} else {
+			mh.statusBar.SetTemporaryMessage("Nothing selected to cut")
+		}
+
 	case input.ActionPaste:
-		pasted, err := mh.editor.Paste()
+		pasted, err := mh.editor.Paste(true) // Default to pasting after
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Paste failed: %v", err)
+			logger.Debugf("Paste error: %v", err)
+			actionProcessed = false
+		} else if !pasted {
+			mh.statusBar.SetTemporaryMessage("Clipboard empty - nothing to paste")
+			actionProcessed = false
+		} else {
+			mh.statusBar.SetTemporaryMessage("Text pasted from clipboard")
+		}
+
+	case input.ActionPasteBefore:
+		pasted, err := mh.editor.Paste(false) // Paste before
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Paste failed: %v", err)
 			logger.Debugf("Paste error: %v", err)
@@ -295,7 +320,35 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 	}
 
 	if actionEvent.Action == input.ActionInsertRune {
+		// Handle pending operators (dd, yy)
+		if mh.pendingOperator != 0 {
+			op := mh.pendingOperator
+			mh.pendingOperator = 0 // reset
+			mh.statusBar.ResetTemporaryMessage()
+
+			if actionEvent.Rune == op {
+				// We have a double operator (dd or yy)
+				mh.editor.ClearSelection()
+				mh.editor.StartOrUpdateSelection()
+				mh.editor.SetLinewise(true) // line-wise selection
+
+				if op == 'd' {
+					return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
+				} else if op == 'y' {
+					return mh.executeAction(input.ActionYank, input.ActionEvent{Action: input.ActionYank}, ev)
+				}
+			}
+			// If not a double operator, you could handle movements (dw, d$) here in the future
+			// For now, cancel operator if not matched
+			mh.statusBar.SetTemporaryMessage("Operator cancelled")
+			return true
+		}
+
 		switch actionEvent.Rune {
+		case 'd', 'y':
+			mh.pendingOperator = actionEvent.Rune
+			mh.statusBar.SetTemporaryMessage(string(actionEvent.Rune) + " (pending)")
+			return true
 		case 'i':
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'a':
@@ -351,16 +404,17 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 			mh.editor.HardHome()
 			return true
 		case 'x':
-			return mh.executeAction(input.ActionDeleteCharForward, input.ActionEvent{Action: input.ActionDeleteCharForward}, ev)
+			// Select current character and cut it
+			mh.editor.ClearSelection()
+			mh.editor.StartOrUpdateSelection()
+			mh.editor.MoveCursor(0, 1) // Select 1 char
+			return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
 		case 'u':
 			return mh.executeAction(input.ActionUndo, input.ActionEvent{Action: input.ActionUndo}, ev)
 		case 'p':
 			return mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
-		case 'y':
-			if ev.Modifiers() == tcell.ModNone {
-				mh.statusBar.SetTemporaryMessage("Use 'v' visual mode to select, then 'y' to yank")
-				return true
-			}
+		case 'P':
+			return mh.executeAction(input.ActionPasteBefore, input.ActionEvent{Action: input.ActionPasteBefore}, ev)
 		case '/':
 			return mh.executeAction(input.ActionEnterFindMode, input.ActionEvent{Action: input.ActionEnterFindMode}, ev)
 		case ':':
@@ -394,7 +448,7 @@ func (mh *ModeHandler) handleActionVisual(actionEvent input.ActionEvent, ev *tce
 	}
 
 	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward || (actionEvent.Action == input.ActionInsertRune && (actionEvent.Rune == 'd' || actionEvent.Rune == 'x')) {
-		res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+		res := mh.executeAction(input.ActionCut, actionEvent, ev)
 		mh.editor.ClearSelection()
 		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 		return res
@@ -464,7 +518,7 @@ func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev 
 			return res
 		case 'd', 'x':
 			// Delete selected lines then return to Normal
-			res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+			res := mh.executeAction(input.ActionCut, actionEvent, ev)
 			mh.editor.ClearSelection()
 			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 			return res
@@ -479,7 +533,7 @@ func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev 
 		return res
 	}
 	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward {
-		res := mh.executeAction(input.ActionDeleteCharBackward, actionEvent, ev)
+		res := mh.executeAction(input.ActionCut, actionEvent, ev)
 		mh.editor.ClearSelection()
 		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 		return res

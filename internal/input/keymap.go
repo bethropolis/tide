@@ -98,6 +98,8 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.leaderMap['r'] = ActionRedo             // <leader>r (alternative for redo)
 	p.leaderMap['y'] = ActionYank             // <leader>y for yank (copy)
 	p.leaderMap['p'] = ActionPaste            // <leader>p for paste
+	p.leaderMap['d'] = ActionCut              // <leader>d for cut
+	p.leaderMap['x'] = ActionCut              // <leader>x for cut
 
 	// Note: We no longer map these directly in runeKeymap,
 	// they'll default to ActionInsertRune unless preceded by leader

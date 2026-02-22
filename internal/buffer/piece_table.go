@@ -82,6 +82,29 @@ func (pt *PieceTable) findPiece(offset int) (int, int) {
 	return len(pt.pieces) - 1, pt.pieces[len(pt.pieces)-1].length
 }
 
+func (pt *PieceTable) GetText(start, end types.Position) string {
+	startOff := pt.positionToOffset(start)
+	endOff := pt.positionToOffset(end)
+
+	if startOff > endOff {
+		startOff, endOff = endOff, startOff
+	}
+
+	if startOff == endOff {
+		return ""
+	}
+
+	bytes := pt.Bytes()
+	if startOff < 0 {
+		startOff = 0
+	}
+	if endOff > len(bytes) {
+		endOff = len(bytes)
+	}
+
+	return string(bytes[startOff:endOff])
+}
+
 func (pt *PieceTable) Bytes() []byte {
 	var result bytes.Buffer
 	for _, p := range pt.pieces {

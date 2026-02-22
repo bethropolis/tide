@@ -58,12 +58,20 @@ func (e *Editor) YankSelection() (bool, error) {
 	return e.clipboardManager.YankSelection()
 }
 
-func (e *Editor) Paste() (bool, error) {
+func (e *Editor) CutSelection() (bool, error) {
+	if e.clipboardManager == nil {
+		logger.Warnf("Editor.CutSelection: clipboardManager is nil")
+		return false, nil
+	}
+	return e.clipboardManager.CutSelection()
+}
+
+func (e *Editor) Paste(after bool) (bool, error) {
 	if e.clipboardManager == nil {
 		logger.Warnf("Editor.Paste: clipboardManager is nil")
 		return false, nil
 	}
-	return e.clipboardManager.Paste()
+	return e.clipboardManager.Paste(after)
 }
 
 // Cursor operations delegated to cursorManager

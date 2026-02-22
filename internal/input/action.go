@@ -31,7 +31,9 @@ const (
 	ActionDeleteCharForward  // Delete key
 	ActionDeleteCharBackward // Backspace key
 	ActionYank               // Copy selection to clipboard
+	ActionCut                // Cut selection to clipboard
 	ActionPaste              // Insert clipboard content
+	ActionPasteBefore        // Insert clipboard content before cursor
 	ActionUndo               // Undo last edit
 	ActionRedo               // Redo previously undone edit
 	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward
