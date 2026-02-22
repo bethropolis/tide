@@ -55,6 +55,8 @@ func NewManager(editor EditorInterface, highlighter *hl.Highlighter, redrawFunc 
 
 // AccumulateEdit adds an edit to the pending list and triggers/resets the timer.
 func (m *Manager) AccumulateEdit(edit types.EditInfo) {
+	m.shiftHighlights(edit)
+
 	m.debMutex.Lock() // Use debouncer mutex
 	defer m.debMutex.Unlock()
 
@@ -72,6 +74,51 @@ func (m *Manager) AccumulateEdit(edit types.EditInfo) {
 	m.pendingCtx, m.cancelFunc = context.WithCancel(context.Background())
 	logger.DebugTagf("highlight", "HighlightManager: Starting debounce timer (%v).", DebounceHighlightDuration)
 	m.timer = time.AfterFunc(DebounceHighlightDuration, m.runHighlightUpdate)
+}
+
+// shiftHighlights adjusts the current cached highlights synchronously.
+// This prevents highlights below an inserted/deleted line from appearing
+// out-of-sync for the duration of the debounce.
+func (m *Manager) shiftHighlights(edit types.EditInfo) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	if m.syntaxHighlights == nil {
+		return
+	}
+
+	startRow := int(edit.StartPosition.Row)
+	oldEndRow := int(edit.OldEndPosition.Row)
+	newEndRow := int(edit.NewEndPosition.Row)
+
+	lineDelta := newEndRow - oldEndRow
+
+	if lineDelta == 0 {
+		// Single-line edit. Clear the affected line so we don't show garbage highlights.
+		for r := startRow; r <= newEndRow; r++ {
+			delete(m.syntaxHighlights, r)
+		}
+		return
+	}
+
+	newHighlights := make(hl.HighlightResult)
+
+	for row, styles := range m.syntaxHighlights {
+		if row < startRow {
+			// Lines above the edit are unaffected.
+			newHighlights[row] = styles
+		} else if row > oldEndRow {
+			// Lines below the edit are shifted by lineDelta.
+			newRow := row + lineDelta
+			if newRow >= 0 {
+				newHighlights[newRow] = styles
+			}
+		} else {
+			// Lines within the edit (e.g. deleted lines) are dropped.
+		}
+	}
+
+	m.syntaxHighlights = newHighlights
 }
 
 // runHighlightUpdate applies pending edits and starts background task.

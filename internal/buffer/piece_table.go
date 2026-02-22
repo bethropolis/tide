@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unicode/utf8"
 
 	"github.com/bethropolis/tide/internal/types"
+	sitter "github.com/smacker/go-tree-sitter"
 )
 
 // PieceTable is a more efficient buffer implementation for large files
@@ -112,7 +114,8 @@ func (pt *PieceTable) LineCount() int {
 	return len(pt.Lines())
 }
 
-// Calculate absolute byte offset from a Position
+// Calculate absolute byte offset from a Position.
+// pos.Col is treated as a rune index.
 func (pt *PieceTable) positionToOffset(pos types.Position) int {
 	lines := pt.Lines()
 	if pos.Line >= len(lines) {
@@ -124,14 +127,87 @@ func (pt *PieceTable) positionToOffset(pos types.Position) int {
 		offset += len(lines[i]) + 1 // +1 for '\n'
 	}
 
-	col := pos.Col
-	if col > len(lines[pos.Line]) {
-		col = len(lines[pos.Line])
+	lineBytes := lines[pos.Line]
+	byteOffInLine := 0
+	runeCount := 0
+	for i := 0; i < len(lineBytes); {
+		if runeCount == pos.Col {
+			break
+		}
+		_, size := utf8.DecodeRune(lineBytes[i:])
+		if size == 0 {
+			break
+		}
+		byteOffInLine += size
+		runeCount++
+		i += size
 	}
-	return offset + col
+	if runeCount < pos.Col {
+		byteOffInLine = len(lineBytes)
+	}
+
+	return offset + byteOffInLine
+}
+
+// getBufferStateForEdit calculates byte offsets and sitter.Point for a given types.Position.
+// pos.Col is treated as a rune index and converted to byte offset for tree-sitter.
+func (pt *PieceTable) getBufferStateForEdit(pos types.Position) (byteOffset uint32, point sitter.Point) {
+	lines := pt.Lines()
+	byteOff := uint32(0)
+
+	// Calculate total bytes up to the start of the target line
+	for i := 0; i < pos.Line; i++ {
+		if i < len(lines) {
+			byteOff += uint32(len(lines[i])) + 1 // +1 for the newline character
+		}
+	}
+
+	// Calculate byte offset within the target line (converting rune col to bytes)
+	colByteOffset := uint32(0)
+	if pos.Line >= 0 && pos.Line < len(lines) {
+		currentLine := lines[pos.Line]
+		byteOffInLine := 0
+		runeCount := 0
+		for i := 0; i < len(currentLine); {
+			if runeCount == pos.Col {
+				break
+			}
+			_, size := utf8.DecodeRune(currentLine[i:])
+			if size == 0 {
+				break
+			}
+			byteOffInLine += size
+			runeCount++
+			i += size
+		}
+		// Handle case where col is at/past the end of the line
+		if runeCount < pos.Col {
+			byteOffInLine = len(currentLine)
+		}
+		colByteOffset = uint32(byteOffInLine)
+		byteOff += colByteOffset
+	}
+
+	point = sitter.Point{
+		Row:    uint32(pos.Line),
+		Column: colByteOffset, // Point column is BYTES within the line
+	}
+	return byteOff, point
 }
 
 func (pt *PieceTable) Insert(pos types.Position, text []byte) (types.EditInfo, error) {
+	editInfo := types.EditInfo{}
+	if len(text) == 0 {
+		return editInfo, nil
+	}
+
+	// 1. Get state *before* the edit
+	startIndex, startPoint := pt.getBufferStateForEdit(pos)
+	editInfo.StartIndex = startIndex
+	editInfo.StartPosition = startPoint
+	editInfo.OldEndIndex = startIndex // For insert, old range is zero length
+	editInfo.OldEndPosition = startPoint
+
 	offset := pt.positionToOffset(pos)
 
 	// Fast path for empty pieces
@@ -139,7 +215,23 @@ func (pt *PieceTable) Insert(pos types.Position, text []byte) (types.EditInfo, e
 		pt.add = append(pt.add, text...)
 		pt.pieces[0] = piece{buffer: addBuffer, start: 0, length: len(text)}
 		pt.modified = true
-		return types.EditInfo{}, nil
+
+		// Calculate NewEndPosition
+		textLen := uint32(len(text))
+		editInfo.NewEndIndex = startIndex + textLen
+		numLinesInserted := bytes.Count(text, []byte("\n"))
+		newEndLine := startPoint.Row + uint32(numLinesInserted)
+		var newEndCol uint32
+		if numLinesInserted == 0 {
+			newEndCol = startPoint.Column + textLen
+		} else {
+			lastNewLineIndex := bytes.LastIndexByte(text, '\n')
+			lastLineBytes := text[lastNewLineIndex+1:]
+			newEndCol = uint32(len(lastLineBytes))
+		}
+		editInfo.NewEndPosition = sitter.Point{Row: newEndLine, Column: newEndCol}
+
+		return editInfo, nil
 	}
 
 	addStart := len(pt.add)
@@ -178,15 +270,43 @@ func (pt *PieceTable) Insert(pos types.Position, text []byte) (types.EditInfo, e
 	pt.pieces = newPieces
 	pt.modified = true
 
-	return types.EditInfo{}, nil
+	// Calculate NewEndPosition
+	textLen := uint32(len(text))
+	editInfo.NewEndIndex = startIndex + textLen
+	numLinesInserted := bytes.Count(text, []byte("\n"))
+	newEndLine := startPoint.Row + uint32(numLinesInserted)
+	var newEndCol uint32
+	if numLinesInserted == 0 {
+		newEndCol = startPoint.Column + textLen
+	} else {
+		lastNewLineIndex := bytes.LastIndexByte(text, '\n')
+		lastLineBytes := text[lastNewLineIndex+1:]
+		newEndCol = uint32(len(lastLineBytes))
+	}
+	editInfo.NewEndPosition = sitter.Point{Row: newEndLine, Column: newEndCol}
+
+	return editInfo, nil
 }
 
 func (pt *PieceTable) Delete(start, end types.Position) (types.EditInfo, error) {
+	editInfo := types.EditInfo{}
+
+	// Get state *before* the edit
+	startIndexBytes, startPoint := pt.getBufferStateForEdit(start)
+	endIndexBytes, endPoint := pt.getBufferStateForEdit(end)
+
+	editInfo.StartIndex = startIndexBytes
+	editInfo.StartPosition = startPoint
+	editInfo.OldEndIndex = endIndexBytes
+	editInfo.OldEndPosition = endPoint
+	editInfo.NewEndIndex = startIndexBytes // After delete, new end is where start was
+	editInfo.NewEndPosition = startPoint
+
 	startOff := pt.positionToOffset(start)
 	endOff := pt.positionToOffset(end)
 
 	if startOff >= endOff {
-		return types.EditInfo{}, nil
+		return editInfo, nil
 	}
 
 	// A simpler (but less optimal) approach for now is to rebuild from Bytes()
@@ -212,7 +332,7 @@ func (pt *PieceTable) Delete(start, end types.Position) (types.EditInfo, error) 
 
 	pt.modified = true
 
-	return types.EditInfo{}, nil
+	return editInfo, nil
 }
 
 func (pt *PieceTable) Save(filePath string) error {
