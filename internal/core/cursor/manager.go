@@ -1,8 +1,6 @@
 package cursor
 
 import (
-	"math" // Adding math import for Log10
-
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/logger"
@@ -198,15 +196,7 @@ func (m *Manager) ScrollToCursor() {
 	// --- Calculate Gutter Width (needed for textAreaWidth) ---
 	buffer := m.editor.GetBuffer()
 	lineCount := buffer.LineCount()
-	if lineCount == 0 {
-		lineCount = 1
-	}
-	maxDigits := int(math.Log10(float64(lineCount))) + 1
-	lineNumberPadding := 1
-	gutterWidth := maxDigits + lineNumberPadding
-	if gutterWidth >= m.viewWidth {
-		gutterWidth = 0 // Disable if no space
-	}
+	gutterWidth := config.GutterWidth(lineCount, m.viewWidth)
 	// --- End Gutter Width ---
 
 	effectiveScrollOff := m.editor.ScrollOff()
@@ -310,4 +300,157 @@ func GetBufferCol(line string, visualCol int, tabWidth int) int {
 // GetVisualLineLength computes the visual length of a line
 func GetVisualLineLength(line string, tabWidth int) int {
 	return GetVisualCol(line, len(line), tabWidth)
+}
+
+// isWordChar returns true for identifier characters (letters, digits, underscore).
+func isWordChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '_'
+}
+
+// MoveToHardLineStart moves the cursor to byte column 0 (Vim '0' behaviour).
+func (m *Manager) MoveToHardLineStart() {
+	m.SetPosition(types.Position{Line: m.position.Line, Col: 0})
+}
+
+// MoveWordForward moves the cursor to the start of the next word (Vim 'w').
+func (m *Manager) MoveWordForward() {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		return
+	}
+	lineCount := buf.LineCount()
+	line := m.position.Line
+	col := m.position.Col
+
+	for {
+		lineBytes, err := buf.Line(line)
+		if err != nil {
+			break
+		}
+		runes := []rune(string(lineBytes))
+		n := len(runes)
+
+		// Advance past current word characters
+		for col < n && isWordChar(runes[col]) {
+			col++
+		}
+		// Advance past non-word characters (whitespace / punctuation)
+		for col < n && !isWordChar(runes[col]) {
+			col++
+		}
+
+		if col < n {
+			// Found next word start on this line
+			m.SetPosition(types.Position{Line: line, Col: col})
+			return
+		}
+
+		// Move to next line
+		line++
+		if line >= lineCount {
+			// Reached EOF – stay at end of last line
+			m.MoveToEndOfLine()
+			return
+		}
+		col = 0
+	}
+}
+
+// MoveWordBackward moves the cursor to the start of the previous word (Vim 'b').
+func (m *Manager) MoveWordBackward() {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		return
+	}
+	line := m.position.Line
+	col := m.position.Col
+
+	for {
+		lineBytes, err := buf.Line(line)
+		if err != nil {
+			break
+		}
+		runes := []rune(string(lineBytes))
+
+		// If at start of line, wrap to previous line
+		if col == 0 {
+			if line == 0 {
+				return // Already at very start
+			}
+			line--
+			prevBytes, err := buf.Line(line)
+			if err != nil {
+				return
+			}
+			col = len([]rune(string(prevBytes)))
+			continue
+		}
+
+		col-- // Step back one rune
+
+		// Skip non-word characters going left
+		for col > 0 && !isWordChar(runes[col]) {
+			col--
+		}
+		// Skip word characters going left to find word start
+		for col > 0 && isWordChar(runes[col-1]) {
+			col--
+		}
+
+		m.SetPosition(types.Position{Line: line, Col: col})
+		return
+	}
+}
+
+// MoveWordEnd moves the cursor to the end of the current/next word (Vim 'e').
+func (m *Manager) MoveWordEnd() {
+	buf := m.editor.GetBuffer()
+	if buf == nil {
+		return
+	}
+	lineCount := buf.LineCount()
+	line := m.position.Line
+	col := m.position.Col
+
+	for {
+		lineBytes, err := buf.Line(line)
+		if err != nil {
+			break
+		}
+		runes := []rune(string(lineBytes))
+		n := len(runes)
+
+		// Advance one step to avoid staying on current position
+		if col+1 < n {
+			col++
+		} else {
+			line++
+			if line >= lineCount {
+				return
+			}
+			col = 0
+			continue
+		}
+
+		// Skip non-word chars
+		for col < n && !isWordChar(runes[col]) {
+			col++
+		}
+		// Advance to end of word
+		for col+1 < n && isWordChar(runes[col+1]) {
+			col++
+		}
+
+		if col < n && isWordChar(runes[col]) {
+			m.SetPosition(types.Position{Line: line, Col: col})
+			return
+		}
+
+		line++
+		if line >= lineCount {
+			return
+		}
+		col = 0
+	}
 }

@@ -18,12 +18,13 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 
 	// :w [filename] - Write buffer to file
 	writeCmdFunc := func(args []string) error {
-		// TODO: Handle optional filename argument `args[0]`
-		// For now, just save to current path
+		var err error
 		if len(args) > 0 {
-			return fmt.Errorf(":w with filename not implemented yet")
+			filename := args[0]
+			err = api.SaveBuffer(filename)
+		} else {
+			err = api.SaveBuffer() // Save to current path
 		}
-		err := api.SaveBuffer() // API method calls editor.SaveBuffer
 		if err != nil {
 			return fmt.Errorf("failed to save buffer: %w", err) // Return error to show in status
 		}
@@ -87,6 +88,36 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 		return nil
 	}
 
+	// --- Buffer Commands ---
+
+	editCmdFunc := func(args []string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("usage: :e <filename>")
+		}
+		filename := args[0]
+		api.OpenFile(filename)
+		return nil
+	}
+
+	bnextCmdFunc := func(args []string) error {
+		api.NextBuffer()
+		return nil
+	}
+
+	bprevCmdFunc := func(args []string) error {
+		api.PrevBuffer()
+		return nil
+	}
+
+	bdeleteCmdFunc := func(args []string) error {
+		return api.CloseBuffer()
+	}
+
+	bdeleteForceCmdFunc := func(args []string) error {
+		api.ForceCloseBuffer()
+		return nil
+	}
+
 	// Register commands
 	err := api.RegisterCommand("w", writeCmdFunc)
 	if err != nil {
@@ -111,6 +142,43 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 	err = api.RegisterCommand("s", substituteCmdFunc)
 	if err != nil {
 		logger.Warnf("Failed to register ':s' command: %v", err)
+	}
+
+	err = api.RegisterCommand("e", editCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':e' command: %v", err)
+	}
+
+	err = api.RegisterCommand("bn", bnextCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bn' command: %v", err)
+	}
+	err = api.RegisterCommand("bnext", bnextCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bnext' command: %v", err)
+	}
+
+	err = api.RegisterCommand("bp", bprevCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bp' command: %v", err)
+	}
+	err = api.RegisterCommand("bprev", bprevCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bprev' command: %v", err)
+	}
+
+	err = api.RegisterCommand("bd", bdeleteCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bd' command: %v", err)
+	}
+	err = api.RegisterCommand("bdelete", bdeleteCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bdelete' command: %v", err)
+	}
+
+	err = api.RegisterCommand("bd!", bdeleteForceCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':bd!' command: %v", err)
 	}
 
 	// Register other app commands here

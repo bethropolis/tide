@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
@@ -20,9 +21,11 @@ type InputMode int
 
 const (
 	ModeNormal InputMode = iota
+	ModeInsert
 	ModeCommand
 	ModeFind
-	// Future: ModeInsert, ModeVisual, etc.
+	ModeVisual
+	ModeVisualLine // Line-wise visual mode (Vim 'V')
 )
 
 // ModeHandler manages input modes, command execution, and related state.
@@ -46,10 +49,18 @@ type ModeHandler struct {
 	lastSearchForward bool
 	lastMatchPos      *types.Position
 
+	// Command Autocomplete State
+	cmdSuggestions   []string
+	cmdSuggestionIdx int
+	cmdOriginalBuf   string
+
 	// Leader Key State
 	leaderWaiting bool
 	leaderTimer   *time.Timer
 	leaderKey     rune
+
+	// Multi-key operator state
+	pendingOperator rune
 }
 
 // Config holds dependencies for the ModeHandler.
@@ -62,6 +73,12 @@ type Config struct {
 }
 
 // New creates a new ModeHandler.
+// SetEditor updates the active editor
+func (mh *ModeHandler) SetEditor(e *core.Editor) {
+	mh.editor = e
+}
+
+// New creates and returns a new ModeHandler.
 func New(cfg Config) *ModeHandler {
 	if cfg.Editor == nil || cfg.InputProcessor == nil || cfg.EventManager == nil || cfg.StatusBar == nil || cfg.QuitSignal == nil {
 		panic("modehandler.New: Missing required dependencies in Config")
@@ -75,10 +92,67 @@ func New(cfg Config) *ModeHandler {
 		currentMode:       ModeNormal,
 		commands:          make(map[string]plugin.CommandFunc),
 		cmdBuffer:         "",
+		cmdSuggestionIdx:  -1,
 		lastSearchForward: true, // Default search direction
 	}
 	mh.leaderKey = cfg.InputProcessor.GetLeaderKey() // Cache leader key
 	return mh
+}
+
+// HandleMouseEvent processes mouse input events.
+func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
+	if mh.currentMode != ModeNormal {
+		return false // Currently only handling mouse in Normal mode
+	}
+
+	x, y := ev.Position()
+	button := ev.Buttons()
+
+	// Handle Scrolling
+	if button&tcell.WheelUp != 0 {
+		mh.editor.MoveCursor(-3, 0) // Scroll up 3 lines
+		return true
+	}
+	if button&tcell.WheelDown != 0 {
+		mh.editor.MoveCursor(3, 0) // Scroll down 3 lines
+		return true
+	}
+
+	// Handle Clicking (Button1 is left click)
+	if button&tcell.Button1 != 0 {
+		viewportY, viewportX := mh.editor.GetViewport()
+
+		targetLine := viewportY + y
+
+		buf := mh.editor.GetBuffer()
+		lineCount := buf.LineCount()
+
+		// Calculate gutter width using shared helper (use large screen width to avoid overflow-to-0)
+		gutterWidth := config.GutterWidth(lineCount, 1<<20)
+
+		// If click is in the gutter, ignore or select line
+		if x < gutterWidth {
+			// Clicked on line number, could select line
+			mh.editor.SetCursor(types.Position{Line: targetLine, Col: 0})
+			mh.editor.ClearSelection()
+			return true
+		}
+
+		// Calculate visual column clicked
+		visualCol := x - gutterWidth + viewportX
+		if visualCol < 0 {
+			visualCol = 0
+		}
+
+		// Translate visual column to actual byte column based on runes/tabs
+		targetCol := mh.editor.GetBufferCol(targetLine, visualCol)
+
+		mh.editor.SetCursor(types.Position{Line: targetLine, Col: targetCol})
+		mh.editor.ClearSelection()
+		return true
+	}
+
+	return false
 }
 
 // HandleKeyEvent decides what to do based on current mode and key event.
@@ -138,7 +212,13 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 	// --- Normal Action Processing ---
 	switch mh.currentMode {
 	case ModeNormal:
-		actionProcessed = mh.executeAction(actionEvent.Action, actionEvent, ev)
+		actionProcessed = mh.handleActionNormal(actionEvent, ev)
+	case ModeInsert:
+		actionProcessed = mh.handleActionInsert(actionEvent, ev)
+	case ModeVisual:
+		actionProcessed = mh.handleActionVisual(actionEvent, ev)
+	case ModeVisualLine:
+		actionProcessed = mh.handleActionVisualLine(actionEvent, ev)
 	case ModeCommand:
 		actionProcessed = mh.handleActionCommand(actionEvent)
 	case ModeFind:
@@ -175,6 +255,12 @@ func (mh *ModeHandler) GetCurrentModeString() string {
 	switch mh.currentMode {
 	case ModeNormal:
 		return "NORMAL"
+	case ModeInsert:
+		return "INSERT"
+	case ModeVisual:
+		return "VISUAL"
+	case ModeVisualLine:
+		return "VISUAL LINE"
 	case ModeCommand:
 		return "COMMAND"
 	case ModeFind:

@@ -11,7 +11,6 @@ import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
-	"github.com/bethropolis/tide/internal/utils" // Import utility package as utils
 	// Import for grapheme cluster support
 )
 
@@ -29,6 +28,7 @@ type EditorInterface interface {
 	SetCursor(pos types.Position)
 	GetSelection() (start types.Position, end types.Position, ok bool)
 	ClearSelection()
+	IsLinewise() bool
 	GetEventManager() *event.Manager
 	ScrollToCursor()
 	MoveCursor(deltaLine, deltaCol int)
@@ -44,9 +44,37 @@ func NewManager(editor EditorInterface, useSystem bool) *Manager { // <<< Add us
 	}
 }
 
+// getEffectiveSelection extends the selection if linewise is true
+func (m *Manager) getEffectiveSelection() (types.Position, types.Position, bool) {
+	start, end, ok := m.editor.GetSelection()
+	if !ok {
+		return start, end, false
+	}
+
+	if m.editor.IsLinewise() {
+		// Linewise selection: Start from column 0 of start line, end at end of end line (or beginning of next line)
+		start.Col = 0
+
+		// To include the newline of the last line, we select up to line + 1, col 0
+		end.Line++
+		end.Col = 0
+
+		buf := m.editor.GetBuffer()
+		if end.Line > buf.LineCount() {
+			end.Line = buf.LineCount()
+			// If it's the very last line without a newline, we might just select to the end of the line
+			if lastLine, err := buf.Line(buf.LineCount() - 1); err == nil {
+				end.Line = buf.LineCount() - 1
+				end.Col = utf8.RuneCount(lastLine)
+			}
+		}
+	}
+	return start, end, true
+}
+
 // YankSelection copies selected text to clipboard
 func (m *Manager) YankSelection() (bool, error) {
-	start, end, ok := m.editor.GetSelection()
+	start, end, ok := m.getEffectiveSelection()
 	if !ok {
 		// No selection active
 		return false, nil // Not an error, just nothing to yank
@@ -77,68 +105,68 @@ func (m *Manager) YankSelection() (bool, error) {
 
 // extractTextFromRange extracts text from a given range in the buffer
 func (m *Manager) extractTextFromRange(start, end types.Position) ([]byte, error) {
-	var content bytes.Buffer
-	buffer := m.editor.GetBuffer()
-
-	// For single line selection
-	if start.Line == end.Line {
-		lineBytes, err := buffer.Line(start.Line)
-		if err != nil {
-			return nil, fmt.Errorf("cannot get line %d: %w", start.Line, err)
-		}
-
-		// Convert rune indices to byte indices using utilities
-		startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
-		endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
-
-		// Make sure indices are valid
-		if startByteOffset >= 0 && endByteOffset >= 0 && startByteOffset <= endByteOffset && endByteOffset <= len(lineBytes) {
-			content.Write(lineBytes[startByteOffset:endByteOffset])
-		} else {
-			return nil, fmt.Errorf("invalid byte offsets calculated (%d, %d) for line %d, cols %d-%d",
-				startByteOffset, endByteOffset, start.Line, start.Col, end.Col)
-		}
-		return content.Bytes(), nil
-	}
-
-	// For multi-line selection
-	for lineIdx := start.Line; lineIdx <= end.Line; lineIdx++ {
-		lineBytes, err := buffer.Line(lineIdx)
-		if err != nil {
-			return nil, fmt.Errorf("cannot get line %d: %w", lineIdx, err)
-		}
-
-		if lineIdx == start.Line {
-			// First line - from start.Col to end of line
-			startByteOffset := utils.RuneIndexToByteOffset(lineBytes, start.Col)
-			if startByteOffset >= 0 && startByteOffset <= len(lineBytes) {
-				content.Write(lineBytes[startByteOffset:])
-				content.WriteByte('\n') // Add newline after first line
-			} else {
-				return nil, fmt.Errorf("invalid start byte offset %d for line %d, col %d",
-					startByteOffset, start.Line, start.Col)
-			}
-		} else if lineIdx == end.Line {
-			// Last line - from beginning to end.Col
-			endByteOffset := utils.RuneIndexToByteOffset(lineBytes, end.Col)
-			if endByteOffset >= 0 && endByteOffset <= len(lineBytes) {
-				content.Write(lineBytes[:endByteOffset])
-			} else {
-				return nil, fmt.Errorf("invalid end byte offset %d for line %d, col %d",
-					endByteOffset, end.Line, end.Col)
-			}
-		} else {
-			// Middle lines - entire line plus newline
-			content.Write(lineBytes)
-			content.WriteByte('\n')
-		}
-	}
-
-	return content.Bytes(), nil
+	return []byte(m.editor.GetBuffer().GetText(start, end)), nil
 }
 
-// Paste inserts clipboard content at cursor
-func (m *Manager) Paste() (bool, error) {
+// CutSelection copies and deletes selected text to clipboard
+func (m *Manager) CutSelection() (bool, error) {
+	start, end, ok := m.getEffectiveSelection()
+	if !ok {
+		return false, nil
+	}
+
+	// Extract the selected text from the buffer
+	content, err := m.extractTextFromRange(start, end)
+	if err != nil {
+		return false, fmt.Errorf("failed to extract selected text for cut: %w", err)
+	}
+
+	if m.useSystemClipboard {
+		err = clipboard.WriteAll(string(content))
+		if err != nil {
+			return false, fmt.Errorf("failed to write to system clipboard: %w", err)
+		}
+		logger.Debugf("ClipboardManager: Cut %d bytes to system clipboard", len(content))
+	} else {
+		m.internalClipboard = content
+		logger.Debugf("ClipboardManager: Cut %d bytes to internal clipboard", len(m.internalClipboard))
+	}
+
+	cursorBefore := m.editor.GetCursor()
+
+	// Delete selection
+	m.editor.ClearSelection()
+	editInfo, err := m.editor.GetBuffer().Delete(start, end)
+	if err != nil {
+		return false, fmt.Errorf("failed to delete selection during cut: %w", err)
+	}
+
+	// Record change for undo/redo
+	histMgr := m.editor.GetHistoryManager()
+	if histMgr != nil {
+		change := history.Change{
+			Type:          history.DeleteAction,
+			Text:          content,
+			StartPosition: start,
+			EndPosition:   end,
+			CursorBefore:  cursorBefore,
+		}
+		histMgr.RecordChange(change)
+	}
+
+	m.editor.SetCursor(start)
+	m.editor.ScrollToCursor()
+
+	if eventMgr := m.editor.GetEventManager(); eventMgr != nil {
+		eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
+	}
+
+	return true, nil
+}
+
+// Paste inserts clipboard content at cursor. If after is true, it pastes after the cursor (like vim 'p').
+// If after is false, it pastes before the cursor (like vim 'P').
+func (m *Manager) Paste(after bool) (bool, error) {
 	var clipboardContent []byte
 	var err error
 
@@ -199,6 +227,39 @@ func (m *Manager) Paste() (bool, error) {
 		}
 	} else {
 		pastePos = m.editor.GetCursor()
+
+		// Handle Vim-style linewise paste
+		isLinewise := len(clipboardContent) > 0 && clipboardContent[len(clipboardContent)-1] == '\n'
+
+		if isLinewise {
+			if after {
+				// Paste below current line
+				pastePos.Line++
+				pastePos.Col = 0
+
+				// Make sure the line exists
+				if pastePos.Line >= buffer.LineCount() {
+					// We need to add a newline at the end of the file first
+					lastLineIdx := buffer.LineCount() - 1
+					if lastLine, err := buffer.Line(lastLineIdx); err == nil {
+						endPos := types.Position{Line: lastLineIdx, Col: utf8.RuneCount(lastLine)}
+						buffer.Insert(endPos, []byte("\n"))
+					}
+					pastePos.Line = buffer.LineCount() - 1
+				}
+			} else {
+				// Paste above current line
+				pastePos.Col = 0
+			}
+		} else {
+			if after {
+				// Paste after current character
+				lineBytes, _ := buffer.Line(pastePos.Line)
+				if pastePos.Col < utf8.RuneCount(lineBytes) {
+					pastePos.Col++
+				}
+			}
+		}
 	}
 
 	// Insert content
@@ -216,16 +277,26 @@ func (m *Manager) Paste() (bool, error) {
 	}
 	lastLineRuneCount := utf8.RuneCount(lastLine)
 
-	// Move cursor to the end of the pasted content
-	newPos := types.Position{
-		Line: pastePos.Line + numLines,
-		Col:  0,
-	}
-
-	if numLines > 0 {
-		newPos.Col = lastLineRuneCount
+	// Move cursor to the start of the pasted content if linewise, or end if character-wise
+	var newPos types.Position
+	isLinewise := len(clipboardContent) > 0 && clipboardContent[len(clipboardContent)-1] == '\n'
+	if isLinewise {
+		newPos = types.Position{Line: pastePos.Line, Col: 0} // Move to start of first pasted line
 	} else {
-		newPos.Col = pastePos.Col + lastLineRuneCount
+		newPos = types.Position{
+			Line: pastePos.Line + numLines,
+			Col:  0,
+		}
+
+		if numLines > 0 {
+			newPos.Col = lastLineRuneCount
+		} else {
+			// Check if we paste at the end, so we place the cursor on the last character instead of past it
+			newPos.Col = pastePos.Col + lastLineRuneCount - 1
+			if newPos.Col < 0 {
+				newPos.Col = 0
+			}
+		}
 	}
 
 	// Record the paste in history

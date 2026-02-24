@@ -10,6 +10,7 @@ import (
 
 	"github.com/bethropolis/tide/internal/buffer"
 	"github.com/bethropolis/tide/internal/commands"
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/bethropolis/tide/internal/core"
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/highlighter"
@@ -26,16 +27,17 @@ import (
 // App encapsulates the core components and main loop of the editor.
 type App struct {
 	tuiManager         *tui.TUI
-	editor             *core.Editor
+	editors            []*core.Editor
+	activeEditorIndex  int
 	statusBar          *statusbar.StatusBar
 	eventManager       *event.Manager
 	pluginManager      *plugin.Manager
 	modeHandler        *modehandler.ModeHandler
 	editorAPI          plugin.EditorAPI
-	filePath           string
 	highlighterService *highlighter.Highlighter
 	activeTheme        *theme.Theme
 	themeManager       *theme.Manager
+	fuzzyFinder        *tui.FuzzyFinder // Overlay
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -50,7 +52,7 @@ func NewApp(filePath string) (*App, error) {
 		return nil, fmt.Errorf("TUI initialization failed: %w", err)
 	}
 
-	buf := buffer.NewSliceBuffer()
+	buf := buffer.NewPieceTable()
 	var _ buffer.Buffer = buf
 
 	loadErr := buf.Load(filePath)
@@ -63,18 +65,26 @@ func NewApp(filePath string) (*App, error) {
 		statusBar:     statusbar.New(statusbar.DefaultConfig()),
 		eventManager:  event.NewManager(),
 		pluginManager: plugin.NewManager(),
-		filePath:      filePath,
 		themeManager:  theme.NewManager(),
 		quit:          make(chan struct{}),
 		redrawRequest: make(chan struct{}, 1),
 	}
+
+	appInstance.fuzzyFinder = tui.NewFuzzyFinder(func(selectedPath string) {
+		// Callback when a file is selected
+		logger.Infof("FuzzyFinder selected: %s", selectedPath)
+		// Open the file in a new buffer (or switch to it)
+		appInstance.OpenFile(selectedPath)
+	})
+
 	appInstance.activeTheme = appInstance.themeManager.Current()
 
 	highlighterSvc := highlighter.NewHighlighter()
 	appInstance.highlighterService = highlighterSvc
 
-	editor := core.NewEditor(buf, highlighterSvc, appInstance.requestRedraw)
-	appInstance.editor = editor
+	editor := appInstance.createEditor(filePath)
+	appInstance.editors = append(appInstance.editors, editor)
+	appInstance.activeEditorIndex = 0
 
 	inputProcessor := input.NewInputProcessor()
 	modeHandlerCfg := modehandler.Config{
@@ -104,9 +114,18 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.eventManager.Subscribe(event.TypeBufferSaved, appInstance.handleBufferSavedForStatus)
 	appInstance.eventManager.Subscribe(event.TypeBufferLoaded, appInstance.handleBufferLoadedForStatus)
 
+	appInstance.eventManager.Subscribe(event.TypeTriggerFuzzyFind, func(e event.Event) bool {
+		cwd, err := os.Getwd()
+		if err == nil && appInstance.fuzzyFinder != nil {
+			appInstance.fuzzyFinder.Toggle(cwd)
+			appInstance.requestRedraw()
+		}
+		return false
+	})
+
 	appInstance.eventManager.Subscribe(event.TypeBufferModified, func(e event.Event) bool {
 		if data, ok := e.Data.(event.BufferModifiedData); ok {
-			if hm := appInstance.editor.GetHighlightManager(); hm != nil {
+			if hm := appInstance.getActiveEditor().GetHighlightManager(); hm != nil {
 				logger.DebugTagf("highlight", "App: Forwarding BufferModified event to core highlight manager")
 				hm.AccumulateEdit(data.Edit)
 			} else {
@@ -121,7 +140,7 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.pluginManager.InitializePlugins(appInstance.editorAPI)
 
 	width, height := tuiManager.Size()
-	editor.SetViewSize(width, height)
+	editor.SetViewSize(width, height-config.StatusBarHeight)
 
 	logger.DebugTagf("highlight", "App: Beginning initial synchronous syntax highlight process...")
 	lang, queryBytes := appInstance.highlighterService.GetLanguage(filePath)
@@ -167,8 +186,10 @@ func NewApp(filePath string) (*App, error) {
 // Run starts the application's main event and drawing loops.
 func (a *App) Run() error {
 	defer func() {
-		if hm := a.editor.GetHighlightManager(); hm != nil {
-			hm.Shutdown()
+		if ed := a.getActiveEditor(); ed != nil {
+			if hm := ed.GetHighlightManager(); hm != nil {
+				hm.Shutdown()
+			}
 		}
 		a.pluginManager.ShutdownPlugins()
 		a.tuiManager.Close()
@@ -186,14 +207,16 @@ func (a *App) Run() error {
 		case <-a.quit:
 			logger.Infof("Quit signal received.")
 			a.eventManager.Dispatch(event.TypeAppQuit, event.AppQuitData{})
-			if a.editor.GetBuffer().IsModified() {
+			if ed := a.getActiveEditor(); ed != nil && ed.GetBuffer().IsModified() {
 				logger.Warnf("Exited with unsaved changes.")
 				fmt.Fprintln(os.Stderr, "Warning: Exited with unsaved changes.")
 			}
 			return nil
 		case <-a.redrawRequest:
 			w, h := a.tuiManager.Size()
-			a.editor.SetViewSize(w, h)
+			if ed := a.getActiveEditor(); ed != nil {
+				ed.SetViewSize(w, h-config.StatusBarHeight)
+			}
 			a.drawEditor()
 		}
 	}
@@ -216,7 +239,14 @@ func (a *App) eventLoop() {
 			needsRedraw = true
 
 		case *tcell.EventKey:
-			needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
+			if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
+				needsRedraw = a.fuzzyFinder.HandleKeyEvent(eventData)
+			} else {
+				needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
+			}
+
+		case *tcell.EventMouse:
+			needsRedraw = a.modeHandler.HandleMouseEvent(eventData)
 		}
 
 		if needsRedraw {
@@ -320,9 +350,13 @@ func (a *App) requestRedraw() {
 
 // updateStatusBarContent pushes current editor state to the status bar component.
 func (a *App) updateStatusBarContent() {
-	buffer := a.editor.GetBuffer()
+	ed := a.getActiveEditor()
+	if ed == nil {
+		return
+	}
+	buffer := ed.GetBuffer()
 	a.statusBar.SetFileInfo(buffer.FilePath(), buffer.IsModified())
-	a.statusBar.SetCursorInfo(a.editor.GetCursor())
+	a.statusBar.SetCursorInfo(ed.GetCursor())
 
 	// Get mode string and potentially command/find buffer from ModeHandler
 	modeStr := a.modeHandler.GetCurrentModeString()
@@ -343,7 +377,8 @@ func (a *App) updateStatusBarContent() {
 // drawEditor handles rendering the editor's content, including the status bar.
 func (a *App) drawEditor() {
 	// Ensure the TUI manager and editor are initialized
-	if a.tuiManager == nil || a.editor == nil || a.statusBar == nil {
+	ed := a.getActiveEditor()
+	if a.tuiManager == nil || ed == nil || a.statusBar == nil {
 		logger.Warnf("drawEditor: TUI manager, editor, or status bar is not initialized")
 		return
 	}
@@ -353,6 +388,16 @@ func (a *App) drawEditor() {
 	w, h := a.tuiManager.Size()
 	a.activeTheme = a.themeManager.Current() // Ensure we have the latest theme
 
+	// Determine if we should draw a tab bar (only with 2+ buffers)
+	multiBuffer := len(a.editors) > 1
+	totalBarHeight := config.StatusBarHeight
+	if multiBuffer {
+		totalBarHeight++ // Extra row for tab bar
+	}
+
+	// Ensure the editor view accounts for all UI rows
+	ed.SetViewSize(w, h-totalBarHeight)
+
 	// Update status bar content *before* drawing anything
 	a.updateStatusBarContent() // Update the status bar with latest info
 
@@ -360,14 +405,85 @@ func (a *App) drawEditor() {
 	a.tuiManager.Clear()
 
 	// Draw the buffer content
-	tui.DrawBuffer(a.tuiManager, a.editor, a.activeTheme)
+	tui.DrawBuffer(a.tuiManager, ed, a.activeTheme)
+
+	// Draw tab bar if multiple buffers are open
+	if multiBuffer {
+		a.drawTabBar(screen, w, h-totalBarHeight)
+	}
 
 	// Draw the status bar
 	a.statusBar.Draw(screen, w, h, a.activeTheme)
 
 	// Draw the cursor (position is calculated relative to buffer draw)
-	tui.DrawCursor(a.tuiManager, a.editor)
+	// Only draw cursor if not in an overlay that hides it
+	showCursor := true
+	if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
+		showCursor = false
+		a.fuzzyFinder.Draw(screen, a.activeTheme, w, h)
+	}
+
+	if showCursor {
+		tui.DrawCursor(a.tuiManager, ed)
+	}
 
 	// Refresh the screen to display changes
 	a.tuiManager.Show()
+}
+
+// drawTabBar renders a row of buffer tabs just above the status bar.
+// tabY is the row on which the tab bar is drawn.
+func (a *App) drawTabBar(screen tcell.Screen, w, tabY int) {
+	th := a.activeTheme
+	activeStyle := th.GetStyle("StatusBar.Mode.Normal").Reverse(false) // active tab: highlighted
+	inactiveStyle := th.GetStyle("StatusBar")                          // inactive tab: base style
+	modifiedStyle := th.GetStyle("StatusBar.Modified")                 // modified marker
+
+	// Fill the row with base style first
+	for x := 0; x < w; x++ {
+		screen.SetContent(x, tabY, ' ', nil, inactiveStyle)
+	}
+
+	x := 0
+	for i, ed := range a.editors {
+		name := ed.GetBuffer().FilePath()
+		if name == "" {
+			name = "[No Name]"
+		} else {
+			// Shorten to basename
+			for j := len(name) - 1; j >= 0; j-- {
+				if name[j] == '/' || name[j] == '\\' {
+					name = name[j+1:]
+					break
+				}
+			}
+		}
+
+		label := " " + name + " "
+		if ed.GetBuffer().IsModified() {
+			label = " " + name + "* "
+		}
+
+		style := inactiveStyle
+		if i == a.activeEditorIndex {
+			style = activeStyle
+		}
+
+		_ = modifiedStyle // used inline via label suffix above
+
+		// Draw the tab label
+		for _, r := range label {
+			if x >= w {
+				break
+			}
+			screen.SetContent(x, tabY, r, nil, style)
+			x++
+		}
+
+		// Separator between tabs
+		if i < len(a.editors)-1 && x < w {
+			screen.SetContent(x, tabY, '│', nil, inactiveStyle)
+			x++
+		}
+	}
 }

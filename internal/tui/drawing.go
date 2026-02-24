@@ -2,8 +2,7 @@
 package tui
 
 import (
-	"fmt"  // Import fmt
-	"math" // Import math for Log10
+	"fmt" // Import fmt
 
 	// Import config for DefaultTabWidth
 	"github.com/bethropolis/tide/internal/config" // Import config for DefaultTabWidth
@@ -101,26 +100,14 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 
 	// Get selection info
 	selStart, selEnd, selectionActive := editor.GetSelection()
+	linewiseSelection := editor.IsLinewise()
 
 	// Get search highlights
 	searchHighlights := editor.GetFindManager().GetHighlights()
 
-	// Calculate gutter width
-	maxDigits := int(math.Log10(float64(lineCount))) + 1
-	lineNumberPadding := 1
-	initialGutterWidth := maxDigits + lineNumberPadding
-	logger.DebugTagf("draw", "DrawBuffer Calc: lineCount=%d, maxDigits=%d, padding=%d -> initialGutterWidth=%d",
-		lineCount, maxDigits, lineNumberPadding, initialGutterWidth)
-
-	gutterWidth := initialGutterWidth
-	if gutterWidth >= width {
-		logger.DebugTagf("draw", "DrawBuffer Gutter Check: gutterWidth (%d) >= width (%d). Setting gutterWidth to 0.",
-			gutterWidth, width)
-		gutterWidth = 0
-	} else {
-		logger.DebugTagf("draw", "DrawBuffer Gutter Check: gutterWidth (%d) < width (%d). Keeping gutterWidth.",
-			gutterWidth, width)
-	}
+	// Calculate gutter width using shared helper
+	gutterWidth := config.GutterWidth(lineCount, width)
+	logger.DebugTagf("draw", "DrawBuffer Calc: lineCount=%d -> gutterWidth=%d", lineCount, gutterWidth)
 
 	// Configure tab width
 	tabWidth := config.DefaultTabWidth
@@ -217,8 +204,17 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 			}
 
 			// Apply selection style (takes precedence over both syntax and search)
-			if selectionActive && isPositionWithin(currentPos, selStart, selEnd) {
-				currentStyle = selectionStyle
+			if selectionActive {
+				inSelection := false
+				if linewiseSelection {
+					// Line-wise: entire line is selected if its line index is in range
+					inSelection = currentPos.Line >= selStart.Line && currentPos.Line <= selEnd.Line
+				} else {
+					inSelection = isPositionWithin(currentPos, selStart, selEnd)
+				}
+				if inSelection {
+					currentStyle = selectionStyle
+				}
 			}
 
 			// Get the main rune
@@ -300,13 +296,9 @@ func DrawCursor(tuiManager *TUI, editor *core.Editor) {
 	if lineCount == 0 {
 		lineCount = 1
 	}
-	maxDigits := int(math.Log10(float64(lineCount))) + 1
-	lineNumberPadding := 1
-	gutterWidth := maxDigits + lineNumberPadding
-	width, height := tuiManager.Size() // Get screen width
-	if gutterWidth >= width {
-		gutterWidth = 0
-	} // Disable gutter if too narrow
+	// Calculate gutter width using shared helper
+	width, height := tuiManager.Size()
+	gutterWidth := config.GutterWidth(lineCount, width)
 
 	// Configurable Tab Width
 	tabWidth := config.DefaultTabWidth

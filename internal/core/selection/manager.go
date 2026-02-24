@@ -11,6 +11,7 @@ type Manager struct {
 
 	// --- State owned by Selection Manager ---
 	selecting      bool
+	linewise       bool           // True when in line-wise visual mode (Vim 'V')
 	selectionStart types.Position // Anchor point
 	selectionEnd   types.Position // Usually follows cursor
 }
@@ -68,8 +69,19 @@ func (m *Manager) ClearSelection() {
 		logger.DebugTagf("core", "Selection Manager: Cleared")
 	}
 	m.selecting = false
+	m.linewise = false
 	m.selectionStart = types.Position{Line: -1, Col: -1}
 	m.selectionEnd = types.Position{Line: -1, Col: -1}
+}
+
+// IsLinewise returns whether the selection is line-wise (Vim 'V' mode).
+func (m *Manager) IsLinewise() bool {
+	return m.linewise
+}
+
+// SetLinewise sets whether the selection is line-wise.
+func (m *Manager) SetLinewise(lw bool) {
+	m.linewise = lw
 }
 
 // StartOrUpdateSelection is called when selection should start or extend (e.g., Shift+Move).

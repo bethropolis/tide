@@ -1,6 +1,23 @@
 package config
 
-import "time"
+import (
+	"math"
+	"time"
+)
+
+// GutterWidth calculates the width of the line-number gutter for a given line
+// count and screen width. Returns 0 when there is not enough room.
+func GutterWidth(lineCount, screenWidth int) int {
+	if lineCount <= 0 {
+		lineCount = 1
+	}
+	maxDigits := int(math.Log10(float64(lineCount))) + 1
+	gw := maxDigits + 1 // +1 padding space after digits
+	if gw >= screenWidth {
+		return 0
+	}
+	return gw
+}
 
 // Base application details
 const AppName = "tide"

@@ -11,6 +11,9 @@ import (
 	"github.com/bethropolis/tide/plugins/wordcount"
 	// Import other plugins as they are created
 	// "github.com/bethropolis/tide/plugins/anotherplugin"
+	"github.com/bethropolis/tide/internal/plugin/lua"
+	"os"
+	"path/filepath"
 )
 
 // registerPlugins initializes and registers all known plugins with the manager.
@@ -42,6 +45,20 @@ func registerPlugins(pm *plugin.Manager) error {
 			if finalErr == nil {
 				finalErr = wrappedErr // Store the first error encountered
 			}
+		}
+	}
+
+	// Load Lua plugins from common directories
+	// 1. Current directory ./plugins/lua
+	if err := lua.LoadLuaPlugins(pm, "plugins/lua"); err != nil {
+		logger.Debugf("Error loading local lua plugins: %v", err)
+	}
+
+	// 2. User config directory ~/.config/tide/plugins/lua
+	if configDir, err := os.UserConfigDir(); err == nil {
+		userPluginDir := filepath.Join(configDir, "tide", "plugins", "lua")
+		if err := lua.LoadLuaPlugins(pm, userPluginDir); err != nil {
+			logger.Debugf("Error loading user lua plugins: %v", err)
 		}
 	}
 

@@ -79,14 +79,21 @@ func init() {
 			"SearchHighlight": tcell.StyleDefault.Background(tcell.ColorOrange).Foreground(tcell.ColorBlack), // Keep high contrast search
 
 			// --- Status Bar Styles ---
-			"StatusBar":              tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Base: BG, default FG for separators
-			"StatusBar.Filename":     tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Filename: Default FG
-			"StatusBar.Modified":     tcell.StyleDefault.Background(dcBackground).Foreground(dcOrange).Bold(true),       // Modified Indicator: Orange, Bold
-			"StatusBar.CursorInfo":   tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),              // Line/Col: Default FG
-			"StatusBar.Mode":         tcell.StyleDefault.Background(dcBackground).Foreground(dcMagenta).Bold(true),      // Mode: Magenta, Bold
-			"StatusBar.Message":      tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground).Italic(true), // General Message: Default FG, Italic
-			"StatusBar.CommandInput": tcell.StyleDefault.Background(dcBackground).Foreground(dcCyan).Bold(true),         // Command Input: Cyan, Bold
-			"StatusBar.FindInput":    tcell.StyleDefault.Background(dcBackground).Foreground(dcGreen).Bold(true),        // Find Input: Green, Bold
+			"StatusBar":            tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),         // Base: BG, default FG for separators
+			"StatusBar.Filename":   tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),         // Filename: Default FG
+			"StatusBar.Modified":   tcell.StyleDefault.Background(dcBackground).Foreground(dcOrange).Bold(true),  // Modified Indicator: Orange, Bold
+			"StatusBar.CursorInfo": tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground),         // Line/Col: Default FG
+			"StatusBar.Mode":       tcell.StyleDefault.Background(dcBackground).Foreground(dcMagenta).Bold(true), // Mode (fallback): Magenta, Bold
+			// Per-mode colours
+			"StatusBar.Mode.Normal":     tcell.StyleDefault.Background(dcBlue).Foreground(tcell.ColorWhite).Bold(true),     // NORMAL: blue pill
+			"StatusBar.Mode.Insert":     tcell.StyleDefault.Background(dcGreen).Foreground(tcell.ColorBlack).Bold(true),    // INSERT: green pill
+			"StatusBar.Mode.Visual":     tcell.StyleDefault.Background(dcOrange).Foreground(tcell.ColorBlack).Bold(true),   // VISUAL: orange pill
+			"StatusBar.Mode.Visualline": tcell.StyleDefault.Background(dcOrange).Foreground(tcell.ColorBlack).Bold(true),   // VISUAL LINE: orange pill (same as visual)
+			"StatusBar.Mode.Command":    tcell.StyleDefault.Background(dcCyan).Foreground(tcell.ColorBlack).Bold(true),     // COMMAND: cyan pill
+			"StatusBar.Mode.Find":       tcell.StyleDefault.Background(dcMagenta).Foreground(tcell.ColorWhite).Bold(true),  // FIND: magenta pill
+			"StatusBar.Message":         tcell.StyleDefault.Background(dcBackground).Foreground(dcForeground).Italic(true), // General Message: Default FG, Italic
+			"StatusBar.CommandInput":    tcell.StyleDefault.Background(dcBackground).Foreground(dcCyan).Bold(true),         // Command Input: Cyan, Bold
+			"StatusBar.FindInput":       tcell.StyleDefault.Background(dcBackground).Foreground(dcGreen).Bold(true),        // Find Input: Green, Bold
 			// --- End Status Bar Styles ---
 
 			// --- Legacy Status Bar Styles (keeping for backward compatibility) ---

@@ -162,6 +162,22 @@ func (e *Editor) StartOrUpdateSelection() {
 	e.selectionManager.StartOrUpdateSelection()
 }
 
+// IsLinewise returns true if the current selection is line-wise.
+func (e *Editor) IsLinewise() bool {
+	if e.selectionManager == nil {
+		return false
+	}
+	return e.selectionManager.IsLinewise()
+}
+
+// SetLinewise marks the current selection as line-wise (Vim 'V' behaviour).
+func (e *Editor) SetLinewise(lw bool) {
+	if e.selectionManager == nil {
+		return
+	}
+	e.selectionManager.SetLinewise(lw)
+}
+
 // --- Cursor Methods ---
 
 // SetCursor sets the cursor position

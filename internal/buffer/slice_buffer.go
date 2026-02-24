@@ -85,6 +85,43 @@ func (sb *SliceBuffer) Line(index int) ([]byte, error) {
 	return sb.lines[index], nil
 }
 
+// GetText returns the text between two positions (start inclusive, end exclusive).
+func (sb *SliceBuffer) GetText(start, end types.Position) string {
+	vStart, vEnd, startOffset, endOffset, err := sb.validateAndGetByteOffsets(start, end)
+	if err != nil || (vStart == vEnd && startOffset == endOffset) {
+		return "" // Invalid range or empty
+	}
+
+	var result bytes.Buffer
+
+	if vStart.Line == vEnd.Line {
+		// Single line text extraction
+		lineBytes := sb.lines[vStart.Line]
+		if startOffset < endOffset && startOffset >= 0 && endOffset <= len(lineBytes) {
+			result.Write(lineBytes[startOffset:endOffset])
+		}
+	} else {
+		// Multi-line text extraction
+		startLineBytes := sb.lines[vStart.Line]
+		if startOffset >= 0 && startOffset <= len(startLineBytes) {
+			result.Write(startLineBytes[startOffset:])
+		}
+		result.WriteByte('\n')
+
+		for i := vStart.Line + 1; i < vEnd.Line; i++ {
+			result.Write(sb.lines[i])
+			result.WriteByte('\n')
+		}
+
+		endLineBytes := sb.lines[vEnd.Line]
+		if endOffset >= 0 && endOffset <= len(endLineBytes) {
+			result.Write(endLineBytes[:endOffset])
+		}
+	}
+
+	return result.String()
+}
+
 // Bytes implementation (no changes)
 func (sb *SliceBuffer) Bytes() []byte {
 	var buffer bytes.Buffer

@@ -56,7 +56,8 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.keymap[tcell.KeyPgDn] = ActionMovePageDown
 	p.keymap[tcell.KeyHome] = ActionMoveHome
 	p.keymap[tcell.KeyEnd] = ActionMoveEnd
-	p.keymap[tcell.KeyTab] = ActionInsertTab // Add Tab key support
+	p.keymap[tcell.KeyTab] = ActionInsertTab         // Add Tab key support
+	p.keymap[tcell.KeyBacktab] = ActionInsertBacktab // Add Shift+Tab support
 	// p.keymap[tcell.KeyEnter] = ActionInsertNewLine // Enter is handled differently by mode now
 	p.keymap[tcell.KeyBackspace] = ActionDeleteCharBackward
 	p.keymap[tcell.KeyBackspace2] = ActionDeleteCharBackward // Often used for Backspace
@@ -88,6 +89,7 @@ func (p *InputProcessor) loadDefaultBindings() {
 	// Map actions to keys that follow the leader key
 	p.leaderMap['/'] = ActionEnterFindMode    // <leader>/
 	p.leaderMap[':'] = ActionEnterCommandMode // <leader>:
+	p.leaderMap['f'] = ActionFuzzyFind        // <leader>f
 	p.leaderMap['n'] = ActionFindNext         // <leader>n
 	p.leaderMap['N'] = ActionFindPrevious     // <leader>N
 	p.leaderMap['w'] = ActionSave             // <leader>w (example alias for save)
@@ -96,6 +98,8 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.leaderMap['r'] = ActionRedo             // <leader>r (alternative for redo)
 	p.leaderMap['y'] = ActionYank             // <leader>y for yank (copy)
 	p.leaderMap['p'] = ActionPaste            // <leader>p for paste
+	p.leaderMap['d'] = ActionCut              // <leader>d for cut
+	p.leaderMap['x'] = ActionCut              // <leader>x for cut
 
 	// Note: We no longer map these directly in runeKeymap,
 	// they'll default to ActionInsertRune unless preceded by leader
@@ -129,8 +133,10 @@ func (p *InputProcessor) ProcessEvent(ev *tcell.EventKey) ActionEvent {
 		return ActionEvent{Action: action} // Return the base action (e.g., ActionMoveUp)
 	}
 
-	// 3. Check Rune mappings (like ':') - Keep this
-	if key == tcell.KeyRune && mod == tcell.ModNone { // Only handle plain runes here
+	// 3. Check Rune mappings
+	// Note: We don't check for ModNone here because Shift might be applied
+	// for uppercase letters or symbols (like ':'). Ctrl and Alt are handled above.
+	if key == tcell.KeyRune {
 		if action, ok := p.runeKeymap[runeVal]; ok {
 			return ActionEvent{Action: action, Rune: runeVal}
 		}

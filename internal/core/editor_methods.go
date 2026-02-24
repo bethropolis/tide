@@ -58,12 +58,20 @@ func (e *Editor) YankSelection() (bool, error) {
 	return e.clipboardManager.YankSelection()
 }
 
-func (e *Editor) Paste() (bool, error) {
+func (e *Editor) CutSelection() (bool, error) {
+	if e.clipboardManager == nil {
+		logger.Warnf("Editor.CutSelection: clipboardManager is nil")
+		return false, nil
+	}
+	return e.clipboardManager.CutSelection()
+}
+
+func (e *Editor) Paste(after bool) (bool, error) {
 	if e.clipboardManager == nil {
 		logger.Warnf("Editor.Paste: clipboardManager is nil")
 		return false, nil
 	}
-	return e.clipboardManager.Paste()
+	return e.clipboardManager.Paste(after)
 }
 
 // Cursor operations delegated to cursorManager
@@ -133,6 +141,50 @@ func (e *Editor) End() {
 	logger.DebugTagf("core", "End: NewCursor(%d,%d)", e.GetCursor().Line, e.GetCursor().Col)
 }
 
+// HardHome moves the cursor to column 0 (Vim '0' behaviour).
+func (e *Editor) HardHome() {
+	if e.cursorManager == nil {
+		return
+	}
+	e.cursorManager.MoveToHardLineStart()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
+// WordForward moves the cursor to the start of the next word (Vim 'w').
+func (e *Editor) WordForward() {
+	if e.cursorManager == nil {
+		return
+	}
+	e.cursorManager.MoveWordForward()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
+// WordBackward moves the cursor to the start of the current/previous word (Vim 'b').
+func (e *Editor) WordBackward() {
+	if e.cursorManager == nil {
+		return
+	}
+	e.cursorManager.MoveWordBackward()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
+// WordEnd moves the cursor to the end of the current/next word (Vim 'e').
+func (e *Editor) WordEnd() {
+	if e.cursorManager == nil {
+		return
+	}
+	e.cursorManager.MoveWordEnd()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
 // Find operations delegated to findManager
 func (e *Editor) Find(term string, startPos types.Position, forward bool) (types.Position, bool) {
 	if e.findManager == nil {
@@ -188,4 +240,21 @@ func (e *Editor) SaveBuffer(filePath ...string) error { // Use variadic string
 		e.eventManager.Dispatch(event.TypeBufferSaved, event.BufferSavedData{FilePath: actualPath})
 	}
 	return nil
+}
+
+// GetBufferCol returns the actual byte index for a visual screen column
+func (e *Editor) GetBufferCol(lineIdx int, visualCol int) int {
+	if e.cursorManager == nil {
+		return visualCol
+	}
+	if lineIdx < 0 || lineIdx >= e.buffer.LineCount() {
+		return visualCol
+	}
+
+	lineBytes, err := e.buffer.Line(lineIdx)
+	if err != nil {
+		return visualCol
+	}
+
+	return e.cursorManager.GetBufferCol(string(lineBytes), visualCol)
 }

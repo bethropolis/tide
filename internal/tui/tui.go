@@ -27,6 +27,7 @@ func New() (*TUI, error) {
 	currentTheme := theme.GetCurrentTheme()
 	defStyle := currentTheme.GetStyle("Default")
 	s.SetStyle(defStyle)
+	s.EnableMouse()
 
 	return &TUI{screen: s}, nil
 }

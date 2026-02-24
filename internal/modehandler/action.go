@@ -35,13 +35,31 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	}
 
 	// Handle selection clear based on non-Shift movement
-	if isMovementAction && !isShift {
+	if isMovementAction && !isShift && mh.currentMode != ModeVisual {
 		mh.editor.ClearSelection()
 	}
 
 	// Execute the action
 	switch action {
 	// Mode Switching
+	case input.ActionEnterInsertMode:
+		mh.editor.ClearSelection()
+		mh.currentMode = ModeInsert
+		mh.statusBar.SetTemporaryMessage("-- INSERT --")
+		logger.Debugf("ModeHandler: Entering Insert Mode")
+
+	case input.ActionEnterNormalMode:
+		mh.editor.ClearSelection()
+		mh.currentMode = ModeNormal
+		mh.statusBar.SetTemporaryMessage("-- NORMAL --")
+		logger.Debugf("ModeHandler: Entering Normal Mode")
+
+	case input.ActionEnterVisualMode:
+		mh.editor.StartOrUpdateSelection()
+		mh.currentMode = ModeVisual
+		mh.statusBar.SetTemporaryMessage("-- VISUAL --")
+		logger.Debugf("ModeHandler: Entering Visual Mode")
+
 	case input.ActionEnterCommandMode:
 		mh.editor.ClearSelection()
 		mh.currentMode = ModeCommand
@@ -141,8 +159,33 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 			mh.statusBar.SetTemporaryMessage("Nothing selected to copy")
 		}
 
+	case input.ActionCut:
+		cut, err := mh.editor.CutSelection()
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Cut failed: %v", err)
+			logger.Debugf("Cut error: %v", err)
+			actionProcessed = false
+		} else if cut {
+			mh.statusBar.SetTemporaryMessage("Text cut to clipboard")
+		} else {
+			mh.statusBar.SetTemporaryMessage("Nothing selected to cut")
+		}
+
 	case input.ActionPaste:
-		pasted, err := mh.editor.Paste()
+		pasted, err := mh.editor.Paste(true) // Default to pasting after
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Paste failed: %v", err)
+			logger.Debugf("Paste error: %v", err)
+			actionProcessed = false
+		} else if !pasted {
+			mh.statusBar.SetTemporaryMessage("Clipboard empty - nothing to paste")
+			actionProcessed = false
+		} else {
+			mh.statusBar.SetTemporaryMessage("Text pasted from clipboard")
+		}
+
+	case input.ActionPasteBefore:
+		pasted, err := mh.editor.Paste(false) // Paste before
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Paste failed: %v", err)
 			logger.Debugf("Paste error: %v", err)
@@ -260,4 +303,241 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	}
 
 	return actionProcessed
+}
+
+// handleActionInsert handles key events specific to Insert Mode.
+func (mh *ModeHandler) handleActionInsert(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action == input.ActionQuit {
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+	return mh.executeAction(actionEvent.Action, actionEvent, ev)
+}
+
+// handleActionNormal handles key events specific to Normal Mode.
+func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action != input.ActionInsertRune && actionEvent.Action != input.ActionUnknown {
+		return mh.executeAction(actionEvent.Action, actionEvent, ev)
+	}
+
+	if actionEvent.Action == input.ActionInsertRune {
+		// Handle pending operators (dd, yy)
+		if mh.pendingOperator != 0 {
+			op := mh.pendingOperator
+			mh.pendingOperator = 0 // reset
+			mh.statusBar.ResetTemporaryMessage()
+
+			if actionEvent.Rune == op {
+				// We have a double operator (dd or yy)
+				mh.editor.ClearSelection()
+				mh.editor.StartOrUpdateSelection()
+				mh.editor.SetLinewise(true) // line-wise selection
+
+				if op == 'd' {
+					return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
+				} else if op == 'y' {
+					return mh.executeAction(input.ActionYank, input.ActionEvent{Action: input.ActionYank}, ev)
+				}
+			}
+			// If not a double operator, you could handle movements (dw, d$) here in the future
+			// For now, cancel operator if not matched
+			mh.statusBar.SetTemporaryMessage("Operator cancelled")
+			return true
+		}
+
+		switch actionEvent.Rune {
+		case 'd', 'y':
+			mh.pendingOperator = actionEvent.Rune
+			mh.statusBar.SetTemporaryMessage(string(actionEvent.Rune) + " (pending)")
+			return true
+		case 'i':
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'a':
+			mh.editor.MoveCursor(0, 1)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'v':
+			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
+		case 'V':
+			// Enter line-wise visual mode
+			mh.editor.StartOrUpdateSelection()
+			mh.editor.SetLinewise(true)
+			mh.currentMode = ModeVisualLine
+			mh.statusBar.SetTemporaryMessage("-- VISUAL LINE --")
+			logger.Debugf("ModeHandler: Entering Visual Line Mode")
+			return true
+		case 'A':
+			// Move to end of line and insert
+			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'I':
+			// Move to start of line and insert
+			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'o':
+			// Insert line below and insert
+			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
+			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'O':
+			// Insert line above and insert
+			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
+			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
+			mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+		case 'h':
+			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+		case 'j':
+			return mh.executeAction(input.ActionMoveDown, input.ActionEvent{Action: input.ActionMoveDown}, ev)
+		case 'k':
+			return mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+		case 'l':
+			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+		case 'w':
+			mh.editor.WordForward()
+			return true
+		case 'b':
+			mh.editor.WordBackward()
+			return true
+		case 'e':
+			mh.editor.WordEnd()
+			return true
+		case '0':
+			mh.editor.HardHome()
+			return true
+		case 'x':
+			// Select current character and cut it
+			mh.editor.ClearSelection()
+			mh.editor.StartOrUpdateSelection()
+			mh.editor.MoveCursor(0, 1) // Select 1 char
+			return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
+		case 'u':
+			return mh.executeAction(input.ActionUndo, input.ActionEvent{Action: input.ActionUndo}, ev)
+		case 'p':
+			return mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
+		case 'P':
+			return mh.executeAction(input.ActionPasteBefore, input.ActionEvent{Action: input.ActionPasteBefore}, ev)
+		case '/':
+			return mh.executeAction(input.ActionEnterFindMode, input.ActionEvent{Action: input.ActionEnterFindMode}, ev)
+		case ':':
+			return mh.executeAction(input.ActionEnterCommandMode, input.ActionEvent{Action: input.ActionEnterCommandMode}, ev)
+		}
+
+		mh.statusBar.SetTemporaryMessage("Unmapped key in Normal mode: %c", actionEvent.Rune)
+		return true
+	}
+
+	return false
+}
+
+// handleActionVisual handles key events specific to Visual Mode.
+func (mh *ModeHandler) handleActionVisual(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action == input.ActionQuit {
+		mh.editor.ClearSelection()
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+
+	if actionEvent.Action >= input.ActionMoveUp && actionEvent.Action <= input.ActionMoveEnd {
+		mockShiftEv := tcell.NewEventKey(ev.Key(), ev.Rune(), ev.Modifiers()|tcell.ModShift)
+		return mh.executeAction(actionEvent.Action, actionEvent, mockShiftEv)
+	}
+
+	if actionEvent.Action == input.ActionYank || (actionEvent.Action == input.ActionInsertRune && actionEvent.Rune == 'y') {
+		res := mh.executeAction(input.ActionYank, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward || (actionEvent.Action == input.ActionInsertRune && (actionEvent.Rune == 'd' || actionEvent.Rune == 'x')) {
+		res := mh.executeAction(input.ActionCut, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	return false
+}
+
+// handleActionVisualLine handles key events in line-wise Visual Mode (Vim 'V').
+func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	// ESC → back to Normal
+	if actionEvent.Action == input.ActionQuit {
+		mh.editor.ClearSelection()
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+
+	// Movement: update line-wise selection (cursor moves, selection follows)
+	isMovement := actionEvent.Action >= input.ActionMoveUp && actionEvent.Action <= input.ActionMoveEnd
+	if isMovement {
+		mockShiftEv := tcell.NewEventKey(ev.Key(), ev.Rune(), ev.Modifiers()|tcell.ModShift)
+		res := mh.executeAction(actionEvent.Action, actionEvent, mockShiftEv)
+		// Ensure linewise flag stays set after movement (executeAction may reset via ClearSelection)
+		mh.editor.SetLinewise(true)
+		return res
+	}
+
+	// Rune-based movement (hjkl, w, b, e, 0)
+	if actionEvent.Action == input.ActionInsertRune {
+		switch actionEvent.Rune {
+		case 'h':
+			mh.editor.MoveCursor(0, -1)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'j':
+			mh.editor.MoveCursor(1, 0)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'k':
+			mh.editor.MoveCursor(-1, 0)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'l':
+			mh.editor.MoveCursor(0, 1)
+			mh.editor.SetLinewise(true)
+			return true
+		case 'w':
+			mh.editor.WordForward()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'b':
+			mh.editor.WordBackward()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'e':
+			mh.editor.WordEnd()
+			mh.editor.SetLinewise(true)
+			return true
+		case '0':
+			mh.editor.HardHome()
+			mh.editor.SetLinewise(true)
+			return true
+		case 'y':
+			// Yank selected lines then return to Normal
+			res := mh.executeAction(input.ActionYank, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'd', 'x':
+			// Delete selected lines then return to Normal
+			res := mh.executeAction(input.ActionCut, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		}
+	}
+
+	// Yank/Delete via actions
+	if actionEvent.Action == input.ActionYank {
+		res := mh.executeAction(input.ActionYank, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward {
+		res := mh.executeAction(input.ActionCut, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	return false
 }

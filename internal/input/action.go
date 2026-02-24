@@ -27,15 +27,21 @@ const (
 	ActionInsertRune         // Requires Rune argument
 	ActionInsertNewLine      // Specific action for Enter
 	ActionInsertTab          // Specific action for Tab key
+	ActionInsertBacktab      // Specific action for Shift+Tab key
 	ActionDeleteCharForward  // Delete key
 	ActionDeleteCharBackward // Backspace key
 	ActionYank               // Copy selection to clipboard
+	ActionCut                // Cut selection to clipboard
 	ActionPaste              // Insert clipboard content
+	ActionPasteBefore        // Insert clipboard content before cursor
 	ActionUndo               // Undo last edit
 	ActionRedo               // Redo previously undone edit
 	// TODO: ActionDeleteWordForward, ActionDeleteWordBackward
 
 	// --- Editor Mode ---
+	ActionEnterNormalMode   // Special action to return to Normal Mode
+	ActionEnterInsertMode   // Special action for 'i', 'a', etc.
+	ActionEnterVisualMode   // Special action for 'v'
 	ActionEnterCommandMode  // Special action for ':'
 	ActionExecuteCommand    // Special action for Enter in Command Mode
 	ActionCancelCommand     // Special action for Esc in Command Mode
@@ -46,6 +52,7 @@ const (
 	ActionEnterFindMode // Trigger find mode (e.g., '/')
 	ActionFindNext      // Find next occurrence (e.g., 'n')
 	ActionFindPrevious  // Find previous occurrence (e.g., 'N')
+	ActionFuzzyFind     // Fuzzy find files
 
 	// --- Viewport / Other ---
 	// ActionScrollUp? ActionScrollDown? (Usually tied to cursor movement)
