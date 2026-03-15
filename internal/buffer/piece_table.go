@@ -332,27 +332,43 @@ func (pt *PieceTable) Delete(start, end types.Position) (types.EditInfo, error) 
 		return editInfo, nil
 	}
 
-	// A simpler (but less optimal) approach for now is to rebuild from Bytes()
-	// to ensure correctness before optimizing
-	content := pt.Bytes()
+	// A more optimal approach using piece manipulation
 
-	// Ensure bounds are safe
-	if startOff > len(content) {
-		startOff = len(content)
+	// Use findPiece to locate starting and ending pieces
+	startPieceIdx, startPieceOffset := pt.findPiece(startOff)
+	endPieceIdx, endPieceOffset := pt.findPiece(endOff)
+
+	var newPieces []piece
+
+	// Prefix pieces (before the deleted region)
+	newPieces = append(newPieces, pt.pieces[:startPieceIdx]...)
+
+	// Handle the start piece (if we keep part of it)
+	if startPieceOffset > 0 {
+		startPiece := pt.pieces[startPieceIdx]
+		newPieces = append(newPieces, piece{
+			buffer: startPiece.buffer,
+			start:  startPiece.start,
+			length: startPieceOffset,
+		})
 	}
-	if endOff > len(content) {
-		endOff = len(content)
+
+	// Handle the end piece (if we keep part of it)
+	if endPieceOffset < pt.pieces[endPieceIdx].length {
+		endPiece := pt.pieces[endPieceIdx]
+		newPieces = append(newPieces, piece{
+			buffer: endPiece.buffer,
+			start:  endPiece.start + endPieceOffset,
+			length: endPiece.length - endPieceOffset,
+		})
 	}
 
-	// Perform deletion by keeping parts outside the range
-	var newContent []byte
-	newContent = append(newContent, content[:startOff]...)
-	newContent = append(newContent, content[endOff:]...)
+	// Suffix pieces (after the deleted region)
+	if endPieceIdx+1 < len(pt.pieces) {
+		newPieces = append(newPieces, pt.pieces[endPieceIdx+1:]...)
+	}
 
-	pt.original = newContent
-	pt.add = []byte{}
-	pt.pieces = []piece{{buffer: originalBuffer, start: 0, length: len(newContent)}}
-
+	pt.pieces = newPieces
 	pt.modified = true
 
 	return editInfo, nil
