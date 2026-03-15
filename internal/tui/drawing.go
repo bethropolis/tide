@@ -73,6 +73,8 @@ func isPositionWithin(pos, start, end types.Position) bool {
 }
 
 // DrawBuffer draws the *visible* portion using the provided theme.
+// It uses the editor's dirty-line tracking to skip rows that have not changed,
+// avoiding redundant screen.SetContent calls. After drawing, it calls ClearDirty.
 func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) {
 	// Fallback theme handling (same as before)
 	if activeTheme == nil {
@@ -118,6 +120,16 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 	// --- Draw Loop ---
 	for screenY := 0; screenY < height; screenY++ {
 		bufferLineIdx := screenY + viewY
+
+		// Skip unchanged lines unless a full redraw was requested.
+		if !editor.IsDirty(bufferLineIdx) {
+			continue
+		}
+
+		// Clear this screen row before (re)drawing it.
+		for x := 0; x < width; x++ {
+			tuiManager.screen.SetContent(x, screenY, ' ', nil, defaultStyle)
+		}
 
 		// --- Draw Line Number Gutter ---
 		if bufferLineIdx >= 0 && bufferLineIdx < len(lines) {
@@ -284,6 +296,9 @@ func DrawBuffer(tuiManager *TUI, editor *core.Editor, activeTheme *theme.Theme) 
 			}
 		}
 	}
+
+	// Reset dirty-line tracking now that this frame has been fully rendered.
+	editor.ClearDirty()
 }
 
 // DrawCursor positions the terminal cursor using visual width calculations.

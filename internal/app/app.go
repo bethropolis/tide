@@ -100,9 +100,8 @@ func NewApp(filePath string) (*App, error) {
 	modeHandler := modehandler.New(modeHandlerCfg)
 	appInstance.modeHandler = modeHandler
 
-	editor.SetEventManager(appInstance.eventManager)
-
 	appInstance.editorAPI = newEditorAPI(appInstance)
+	modeHandler.SetAPI(appInstance.editorAPI)
 
 	commands.RegisterAppCommands(appInstance.editorAPI, appInstance)
 
@@ -134,9 +133,31 @@ func NewApp(filePath string) (*App, error) {
 			} else {
 				logger.Warnf("App: Highlight manager is nil, cannot process buffer modification.")
 			}
+			// Mark affected lines dirty for delta rendering.
+			ed := appInstance.getActiveEditor()
+			startLine := int(data.Edit.StartPosition.Row)
+			newEndLine := int(data.Edit.NewEndPosition.Row)
+			oldEndLine := int(data.Edit.OldEndPosition.Row)
+			// When the edit touches multiple lines, force a full redraw so that
+			// any inserted/deleted rows below the edit point are refreshed.
+			if newEndLine > startLine || oldEndLine > startLine {
+				ed.MarkAllDirty()
+			} else {
+				ed.MarkDirty(startLine)
+			}
 		} else {
 			logger.Warnf("App: Received BufferModified event with unexpected data type: %T", e.Data)
 		}
+		return false
+	})
+
+	// When the highlight manager finishes a background pass, mark all lines dirty
+	// and request a redraw so the new highlights appear.
+	appInstance.eventManager.Subscribe(event.TypeHighlightComplete, func(e event.Event) bool {
+		if ed := appInstance.getActiveEditor(); ed != nil {
+			ed.MarkAllDirty()
+		}
+		appInstance.requestRedraw()
 		return false
 	})
 
@@ -173,6 +194,7 @@ func NewApp(filePath string) (*App, error) {
 				if hm := editor.GetHighlightManager(); hm != nil {
 					hm.UpdateHighlights(initialHighlights, initialTree)
 					logger.DebugTagf("highlight", "App: Core highlight manager state updated successfully. Requesting redraw.")
+					editor.MarkAllDirty()
 					appInstance.requestRedraw()
 				} else {
 					logger.Warnf("App: Highlight manager is nil after async highlight.")
@@ -329,7 +351,8 @@ func (a *App) SetTheme(name string) error {
 		NewThemeName: newTheme.Name,
 	})
 
-	// Force an immediate redraw
+	// Force a full redraw (all lines may have new styling under the new theme)
+	a.getActiveEditor().MarkAllDirty()
 	a.requestRedraw()
 	return nil
 }
@@ -408,9 +431,13 @@ func (a *App) drawEditor() {
 	a.updateStatusBarContent() // Update the status bar with latest info
 
 	// --- Drawing ---
-	a.tuiManager.Clear()
+	// For a full redraw (e.g. first frame, resize, theme change) clear everything.
+	// For incremental redraws, DrawBuffer handles clearing only dirty rows.
+	if ed.NeedsFullRedraw() {
+		a.tuiManager.Clear()
+	}
 
-	// Draw the buffer content
+	// Draw the buffer content (uses dirty-line tracking internally)
 	tui.DrawBuffer(a.tuiManager, ed, a.activeTheme)
 
 	// Draw tab bar if multiple buffers are open

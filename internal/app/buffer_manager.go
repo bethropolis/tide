@@ -28,8 +28,10 @@ func (a *App) createEditor(filePath string) *core.Editor {
 		}
 	}
 
-	editor := core.NewEditor(buf, a.highlighterService, a.requestRedraw)
-	editor.SetEventManager(a.eventManager)
+	// Use the event manager so the highlight manager can dispatch TypeHighlightComplete
+	// when a background highlighting pass finishes; the app subscribes to that event
+	// to call MarkAllDirty() + requestRedraw().
+	editor := core.NewEditor(buf, a.highlighterService, a.eventManager)
 
 	lang, queryBytes := a.highlighterService.GetLanguage(filePath)
 	if lang != nil {
@@ -80,6 +82,7 @@ func (a *App) NextBuffer() {
 	if a.modeHandler != nil {
 		a.modeHandler.SetEditor(a.getActiveEditor())
 	}
+	a.getActiveEditor().MarkAllDirty() // Force full redraw for the newly active buffer
 	a.statusBar.SetTemporaryMessage("Buffer %d/%d", a.activeEditorIndex+1, len(a.editors))
 	a.requestRedraw()
 }
@@ -93,6 +96,7 @@ func (a *App) PrevBuffer() {
 	if a.modeHandler != nil {
 		a.modeHandler.SetEditor(a.getActiveEditor())
 	}
+	a.getActiveEditor().MarkAllDirty() // Force full redraw for the newly active buffer
 	a.statusBar.SetTemporaryMessage("Buffer %d/%d", a.activeEditorIndex+1, len(a.editors))
 	a.requestRedraw()
 }
@@ -127,6 +131,7 @@ func (a *App) ForceCloseBuffer() {
 	if a.modeHandler != nil {
 		a.modeHandler.SetEditor(a.getActiveEditor())
 	}
+	a.getActiveEditor().MarkAllDirty()
 	a.statusBar.SetTemporaryMessage("Buffer closed")
 	a.requestRedraw()
 }

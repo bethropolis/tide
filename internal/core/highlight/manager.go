@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bethropolis/tide/internal/buffer"
+	"github.com/bethropolis/tide/internal/event"
 	hl "github.com/bethropolis/tide/internal/highlighter"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/types"
@@ -27,9 +28,9 @@ type EditorInterface interface {
 type Manager struct {
 	editor           EditorInterface
 	highlighter      *hl.Highlighter
-	appRedraw        func()
-	mutex            sync.RWMutex // Protects syntaxHighlights, syntaxTree
-	debMutex         sync.Mutex   // Protects debouncer state (timer, pending*, isRunning)
+	eventManager     *event.Manager // dispatches TypeHighlightComplete; may be nil
+	mutex            sync.RWMutex   // Protects syntaxHighlights, syntaxTree
+	debMutex         sync.Mutex     // Protects debouncer state (timer, pending*, isRunning)
 	timer            *time.Timer
 	pendingCtx       context.Context
 	cancelFunc       context.CancelFunc
@@ -40,17 +41,26 @@ type Manager struct {
 }
 
 // NewManager creates a new highlight manager.
-func NewManager(editor EditorInterface, highlighter *hl.Highlighter, redrawFunc func()) *Manager {
-	if redrawFunc == nil {
-		redrawFunc = func() { logger.Warnf("Highlight Manager: redrawFunc is nil!") }
-	}
+// eventManager is the application event bus used to dispatch
+// event.TypeHighlightComplete when a background pass finishes; pass nil to
+// disable event dispatch (highlights will still be applied).
+func NewManager(editor EditorInterface, highlighter *hl.Highlighter, eventManager *event.Manager) *Manager {
 	return &Manager{
 		editor:           editor,
 		highlighter:      highlighter,
-		appRedraw:        redrawFunc,
+		eventManager:     eventManager,
 		pendingEdits:     make([]types.EditInfo, 0, 5),
 		syntaxHighlights: make(hl.HighlightResult),
 	}
+}
+
+// notifyComplete fires the TypeHighlightComplete event so the UI layer can
+// schedule a redraw without the core package knowing about rendering details.
+func (m *Manager) notifyComplete() {
+	if m.eventManager == nil {
+		return
+	}
+	m.eventManager.Dispatch(event.TypeHighlightComplete, event.HighlightCompleteData{})
 }
 
 // AccumulateEdit adds an edit to the pending list and triggers/resets the timer.
@@ -187,7 +197,7 @@ func (m *Manager) runHighlightUpdate() {
 		if lang == nil {
 			logger.DebugTagf("highlight", "HighlightManager: No language detected for '%s', clearing highlights.", fp)
 			m.UpdateHighlights(make(hl.HighlightResult), nil)
-			m.appRedraw()
+			m.notifyComplete()
 			return
 		}
 
@@ -201,13 +211,13 @@ func (m *Manager) runHighlightUpdate() {
 				logger.Warnf("HighlightManager: Background highlighting failed: %v", err)
 				m.UpdateHighlights(make(hl.HighlightResult), nil) // Clear highlights
 			}
-			m.appRedraw()
+			m.notifyComplete()
 			return
 		}
 
 		logger.DebugTagf("highlight", "HighlightManager: Background task generated %d lines of highlights.", len(newHighlights))
 		m.UpdateHighlights(newHighlights, newTree)
-		m.appRedraw()
+		m.notifyComplete()
 
 	}(snapshotBytes, filePath, editsToProcess, ctx) // <<< Pass snapshotBytes
 }

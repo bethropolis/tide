@@ -29,8 +29,9 @@ const (
 
 	// Plugin specific events can be defined later or use custom data
 
-	TypeThemeChanged     // Fired when the theme is changed
-	TypeTriggerFuzzyFind // Fired to open fuzzy finder
+	TypeThemeChanged      // Fired when the theme is changed
+	TypeTriggerFuzzyFind  // Fired to open fuzzy finder
+	TypeHighlightComplete // Fired when async syntax highlighting finishes
 )
 
 // Event is the structure passed through the event bus.
@@ -61,6 +62,7 @@ type BufferSavedData struct {
 
 // CursorMovedData contains the new cursor position.
 type CursorMovedData struct {
+	OldPosition types.Position
 	NewPosition types.Position
 }
 
@@ -83,3 +85,7 @@ type ThemeChangedData struct {
 
 // TriggerFuzzyFindData is empty for now
 type TriggerFuzzyFindData struct{}
+
+// HighlightCompleteData is fired by the highlight manager when a background
+// highlighting pass finishes (successfully or with cleared results).
+type HighlightCompleteData struct{}

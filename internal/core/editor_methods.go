@@ -219,6 +219,42 @@ func (e *Editor) Replace(pattern, replacement string, global bool) (int, error) 
 	return e.findManager.Replace(pattern, replacement, global)
 }
 
+// ReplaceAll replaces all occurrences of pattern across the entire buffer.
+// Wraps the operation in a history transaction for atomic undo.
+func (e *Editor) ReplaceAll(pattern, replacement string) (int, error) {
+	if e.findManager == nil {
+		logger.Warnf("Editor.ReplaceAll: findManager is nil")
+		return 0, fmt.Errorf("find manager not initialized")
+	}
+	cursorBefore := e.GetCursor()
+	if e.historyManager != nil {
+		e.historyManager.BeginTransaction()
+	}
+	count, err := e.findManager.ReplaceAll(pattern, replacement)
+	if e.historyManager != nil {
+		e.historyManager.EndTransaction(cursorBefore)
+	}
+	return count, err
+}
+
+// ReplaceInRange replaces all occurrences of pattern in [startLine, endLine].
+// Wraps the operation in a history transaction for atomic undo.
+func (e *Editor) ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) {
+	if e.findManager == nil {
+		logger.Warnf("Editor.ReplaceInRange: findManager is nil")
+		return 0, fmt.Errorf("find manager not initialized")
+	}
+	cursorBefore := e.GetCursor()
+	if e.historyManager != nil {
+		e.historyManager.BeginTransaction()
+	}
+	count, err := e.findManager.ReplaceInRange(pattern, replacement, startLine, endLine)
+	if e.historyManager != nil {
+		e.historyManager.EndTransaction(cursorBefore)
+	}
+	return count, err
+}
+
 // SaveBuffer handles buffer saving, accepting an optional override path.
 func (e *Editor) SaveBuffer(filePath ...string) error { // Use variadic string
 	savePath := ""
@@ -242,7 +278,16 @@ func (e *Editor) SaveBuffer(filePath ...string) error { // Use variadic string
 	return nil
 }
 
-// GetBufferCol returns the actual byte index for a visual screen column
+// GetVisualSelectionLines returns the start and end line numbers of the current
+// visual selection. If no selection is active it returns the cursor line for both.
+func (e *Editor) GetVisualSelectionLines() (startLine, endLine int) {
+	start, end, ok := e.GetSelection()
+	if !ok {
+		cur := e.GetCursor()
+		return cur.Line, cur.Line
+	}
+	return start.Line, end.Line
+}
 func (e *Editor) GetBufferCol(lineIdx int, visualCol int) int {
 	if e.cursorManager == nil {
 		return visualCol
