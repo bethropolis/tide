@@ -40,11 +40,17 @@ type Editor struct {
 	historyManager   *history.Manager
 	findManager      *find.Manager
 	highlightManager *highlight.Manager // Use the core highlight manager
+
+	// Dirty-line tracking: set of buffer line indices that changed since last draw.
+	// When forceFullRedraw is true the entire viewport must be redrawn.
+	dirtyLines      map[int]struct{}
+	forceFullRedraw bool
 }
 
 // NewEditor creates a new Editor instance with a given buffer.
-// It now requires a redraw function for the highlight manager.
-func NewEditor(buf buffer.Buffer, highlighterService *hl.Highlighter, redrawFunc func()) *Editor {
+// eventManager is used by the highlight manager to dispatch TypeHighlightComplete
+// when a background highlighting pass completes; pass nil to disable.
+func NewEditor(buf buffer.Buffer, highlighterService *hl.Highlighter, eventManager *event.Manager) *Editor {
 	cfg := config.Get() // Get loaded config
 	e := &Editor{
 		buffer:      buf,
@@ -59,8 +65,12 @@ func NewEditor(buf buffer.Buffer, highlighterService *hl.Highlighter, redrawFunc
 	e.clipboardManager = clipboard.NewManager(e, cfg.Editor.SystemClipboard)
 	e.historyManager = history.NewManager(e, history.DefaultMaxHistory)
 	e.findManager = find.NewManager(e)
-	// Initialize highlight manager, passing dependencies including redrawFunc
-	e.highlightManager = highlight.NewManager(e, e.highlighter, redrawFunc)
+	// Initialize highlight manager with the event manager so it can fire
+	// TypeHighlightComplete when a background pass finishes.
+	e.highlightManager = highlight.NewManager(e, e.highlighter, eventManager)
+	e.eventManager = eventManager
+	e.dirtyLines = make(map[int]struct{})
+	e.forceFullRedraw = true // First draw is always a full redraw
 
 	logger.DebugTagf("core", "Editor created and managers initialized. System Clipboard: %v", cfg.Editor.SystemClipboard)
 	return e
@@ -271,9 +281,12 @@ func (e *Editor) SetViewSize(width, height int) {
 	}
 	e.viewHeight = adjustedHeight
 
-	// Inform the cursor manager of the new view size
+	// Inform the cursor manager of the new view size.
+	// Pass adjustedHeight (usable text area height) so ScrollToCursor and
+	// PageMove use the correct boundary — not the full terminal height which
+	// would include the status bar row(s).
 	if e.cursorManager != nil {
-		e.cursorManager.SetViewSize(width, height) // Pass original height to cursor manager for PageMove calc
+		e.cursorManager.SetViewSize(width, adjustedHeight)
 	}
 }
 
@@ -323,4 +336,46 @@ func (e *Editor) GetFindManager() *find.Manager {
 // ScrollOff returns the scrolloff setting
 func (e *Editor) ScrollOff() int {
 	return e.scrollOff
+}
+
+// --- Dirty-Line Tracking ---
+
+// MarkDirty marks a specific buffer line as needing a redraw.
+func (e *Editor) MarkDirty(line int) {
+	if e.dirtyLines == nil {
+		e.dirtyLines = make(map[int]struct{})
+	}
+	e.dirtyLines[line] = struct{}{}
+}
+
+// MarkAllDirty signals that every visible line must be redrawn.
+// This is used on viewport scroll, theme change, search highlight update, etc.
+func (e *Editor) MarkAllDirty() {
+	e.forceFullRedraw = true
+}
+
+// IsDirty reports whether the given buffer line needs to be redrawn.
+// Returns true also when a full redraw has been requested.
+func (e *Editor) IsDirty(line int) bool {
+	if e.forceFullRedraw {
+		return true
+	}
+	if e.dirtyLines == nil {
+		return false
+	}
+	_, ok := e.dirtyLines[line]
+	return ok
+}
+
+// NeedsFullRedraw reports whether the entire viewport should be cleared and redrawn.
+func (e *Editor) NeedsFullRedraw() bool {
+	return e.forceFullRedraw
+}
+
+// ClearDirty resets all dirty-line tracking state after a frame has been drawn.
+func (e *Editor) ClearDirty() {
+	e.forceFullRedraw = false
+	if e.dirtyLines != nil {
+		e.dirtyLines = make(map[int]struct{})
+	}
 }

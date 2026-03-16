@@ -29,8 +29,10 @@ type EditorAPI interface {
 	InsertText(pos types.Position, text []byte) error
 	DeleteRange(start, end types.Position) error
 	// ReplaceRange(start, end types.Position, text []byte) error // Combine delete/insert
-	SaveBuffer(filePath ...string) error                           // Save buffer to file with optional path
-	Replace(pattern, replacement string, global bool) (int, error) // Add Replace for substitution command
+	SaveBuffer(filePath ...string) error                                             // Save buffer to file with optional path
+	Replace(pattern, replacement string, global bool) (int, error)                   // Replace on current line
+	ReplaceAll(pattern, replacement string) (int, error)                             // :%s – replace across entire buffer
+	ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) // :'<,'>s – replace within line range
 
 	// --- Cursor & Viewport ---
 	GetCursor() types.Position

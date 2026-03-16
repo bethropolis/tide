@@ -9,6 +9,17 @@ import (
 func (a *App) handleCursorMovedForStatus(e event.Event) bool {
 	if data, ok := e.Data.(event.CursorMovedData); ok {
 		a.statusBar.SetCursorInfo(data.NewPosition)
+
+		ed := a.getActiveEditor()
+		// If a selection is active, all highlighted rows may change; force full redraw.
+		// Otherwise mark both the line the cursor left and the line it moved to so
+		// that the previous cursor position is cleared and the new one is painted.
+		if _, _, selActive := ed.GetSelection(); selActive {
+			ed.MarkAllDirty()
+		} else {
+			ed.MarkDirty(data.OldPosition.Line)
+			ed.MarkDirty(data.NewPosition.Line)
+		}
 	}
 	return false // Not consumed
 }
@@ -30,19 +41,12 @@ func (a *App) handleBufferSavedForStatus(e event.Event) bool {
 func (a *App) handleBufferLoadedForStatus(e event.Event) bool {
 	a.updateStatusBarContent() // Update file path, modified status etc.
 
-	// Trigger initial highlight after load
-	// This might need adjustment depending on how initial highlighting is handled now
-	// If initial highlighting happens synchronously in NewApp/Load, this might
-	// only be needed if loading *into* an existing editor instance (e.g., :e command)
-	// For now, let's assume initial highlight covers the load case.
-	// If async highlighting is desired *after* load, we might need:
 	if hm := a.getActiveEditor().GetHighlightManager(); hm != nil {
-		// Maybe trigger a full re-highlight async?
-		// hm.AccumulateEdit(types.EditInfo{}) // Or a dedicated method?
 		logger.Debugf("App: Buffer loaded, relying on initial sync highlight or subsequent edits.")
 	}
 
-	// Editor state might change significantly (cursor, viewport), request redraw
+	// A full buffer load means everything on screen may have changed.
+	a.getActiveEditor().MarkAllDirty()
 	a.requestRedraw()
 	return false // Not consumed
 }

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bethropolis/tide/internal/core/find"
 	"github.com/bethropolis/tide/internal/input"
 	"github.com/bethropolis/tide/internal/logger"
 )
@@ -153,6 +154,59 @@ func (mh *ModeHandler) executeCommand() {
 	}
 	cmdStr := mh.cmdBuffer // Copy buffer before clearing
 	mh.cmdBuffer = ""      // Clear buffer now
+
+	// --- Handle range-prefixed substitute commands before splitting on whitespace ---
+	// :%s/pattern/replacement/[g]  → ReplaceAll across entire buffer
+	if strings.HasPrefix(cmdStr, "%s/") {
+		subStr := "/" + cmdStr[2:] // strip the leading '%', keep the /pat/rep/[g] part
+		pattern, replacement, _, err := find.ParseSubstituteCommand(subStr)
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Invalid substitute: %v", err)
+			return
+		}
+		if mh.api == nil {
+			mh.statusBar.SetTemporaryMessage("No editor API available")
+			return
+		}
+		count, err := mh.api.ReplaceAll(pattern, replacement)
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Replace failed: %v", err)
+			return
+		}
+		if count == 0 {
+			mh.statusBar.SetTemporaryMessage("Pattern not found: %s", pattern)
+		} else {
+			mh.statusBar.SetTemporaryMessage("Replaced %d occurrence(s)", count)
+		}
+		return
+	}
+
+	// :'<,'>s/pattern/replacement/[g]  → ReplaceInRange using current visual selection
+	if strings.HasPrefix(cmdStr, "'<,'>s/") {
+		subStr := "/" + cmdStr[6:] // strip "'<,'>", keep /pat/rep/[g]
+		pattern, replacement, _, err := find.ParseSubstituteCommand(subStr)
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Invalid substitute: %v", err)
+			return
+		}
+		if mh.api == nil {
+			mh.statusBar.SetTemporaryMessage("No editor API available")
+			return
+		}
+		// Determine range from the stored visual selection on the editor
+		startLine, endLine := mh.editor.GetVisualSelectionLines()
+		count, err := mh.api.ReplaceInRange(pattern, replacement, startLine, endLine)
+		if err != nil {
+			mh.statusBar.SetTemporaryMessage("Replace failed: %v", err)
+			return
+		}
+		if count == 0 {
+			mh.statusBar.SetTemporaryMessage("Pattern not found: %s", pattern)
+		} else {
+			mh.statusBar.SetTemporaryMessage("Replaced %d occurrence(s)", count)
+		}
+		return
+	}
 
 	parts := strings.Fields(cmdStr)
 	cmdName := parts[0]

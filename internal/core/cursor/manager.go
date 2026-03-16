@@ -11,6 +11,10 @@ import (
 type Editor interface {
 	GetBuffer() buffer.Buffer
 	ScrollOff() int
+	// MarkAllDirty tells the editor that the entire visible area needs
+	// repainting. The cursor manager calls this whenever the viewport
+	// scrolls so that delta rendering does not skip newly revealed rows.
+	MarkAllDirty()
 }
 
 // Manager handles cursor positioning and viewport management
@@ -253,13 +257,17 @@ func (m *Manager) ScrollToCursor() {
 	}
 	m.viewportLeft = newViewportX // Update the manager's state
 
-	// --- Logging ---
+	// --- Notify editor if viewport changed ---
 	if m.viewportTop != oldViewportY || m.viewportLeft != oldViewportX {
 		logger.DebugTagf("cursor",
 			"ScrollToCursor: Cursor(L:%d, C:%d Vis:%d) Viewport(Y:%d->%d, X:%d->%d) TW:%d GH:%d TVW:%d",
 			m.position.Line, m.position.Col, cursorVisualCol,
 			oldViewportY, m.viewportTop, oldViewportX, m.viewportLeft,
 			m.viewWidth, m.viewHeight, textAreaWidth)
+		// Every screen row now maps to a different buffer line, so the entire
+		// visible area must be repainted. Without this, delta rendering would
+		// skip the newly revealed rows and leave stale content on screen.
+		m.editor.MarkAllDirty()
 	}
 }
 
