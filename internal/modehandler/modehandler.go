@@ -61,6 +61,13 @@ type ModeHandler struct {
 
 	// Multi-key operator state
 	pendingOperator rune
+
+	// Mouse drag state
+	mouseDragging  bool
+	mouseDragStart types.Position
+
+	// Editor API (for range substitution commands)
+	api plugin.EditorAPI
 }
 
 // Config holds dependencies for the ModeHandler.
@@ -76,6 +83,11 @@ type Config struct {
 // SetEditor updates the active editor
 func (mh *ModeHandler) SetEditor(e *core.Editor) {
 	mh.editor = e
+}
+
+// SetAPI stores a reference to the EditorAPI for use by command handlers.
+func (mh *ModeHandler) SetAPI(api plugin.EditorAPI) {
+	mh.api = api
 }
 
 // New creates and returns a new ModeHandler.
@@ -101,14 +113,11 @@ func New(cfg Config) *ModeHandler {
 
 // HandleMouseEvent processes mouse input events.
 func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
-	if mh.currentMode != ModeNormal {
-		return false // Currently only handling mouse in Normal mode
-	}
-
+	// Allow scroll wheel in any mode
 	x, y := ev.Position()
 	button := ev.Buttons()
 
-	// Handle Scrolling
+	// Handle Scrolling (works in all modes)
 	if button&tcell.WheelUp != 0 {
 		mh.editor.MoveCursor(-3, 0) // Scroll up 3 lines
 		return true
@@ -116,6 +125,11 @@ func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
 	if button&tcell.WheelDown != 0 {
 		mh.editor.MoveCursor(3, 0) // Scroll down 3 lines
 		return true
+	}
+
+	// Only handle click/drag in Normal or Visual mode
+	if mh.currentMode != ModeNormal && mh.currentMode != ModeVisual {
+		return false
 	}
 
 	// Handle Clicking (Button1 is left click)
@@ -130,11 +144,23 @@ func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
 		// Calculate gutter width using shared helper (use large screen width to avoid overflow-to-0)
 		gutterWidth := config.GutterWidth(lineCount, 1<<20)
 
+		// Clamp targetLine to valid range
+		if targetLine < 0 {
+			targetLine = 0
+		}
+		if targetLine >= lineCount {
+			targetLine = lineCount - 1
+		}
+
 		// If click is in the gutter, ignore or select line
 		if x < gutterWidth {
 			// Clicked on line number, could select line
 			mh.editor.SetCursor(types.Position{Line: targetLine, Col: 0})
 			mh.editor.ClearSelection()
+			if mh.currentMode == ModeVisual {
+				mh.currentMode = ModeNormal
+				mh.statusBar.SetTemporaryMessage("")
+			}
 			return true
 		}
 
@@ -146,9 +172,35 @@ func (mh *ModeHandler) HandleMouseEvent(ev *tcell.EventMouse) bool {
 
 		// Translate visual column to actual byte column based on runes/tabs
 		targetCol := mh.editor.GetBufferCol(targetLine, visualCol)
+		targetPos := types.Position{Line: targetLine, Col: targetCol}
 
-		mh.editor.SetCursor(types.Position{Line: targetLine, Col: targetCol})
+		if mh.mouseDragging {
+			// --- Drag: extend selection to new cursor position ---
+			mh.editor.SetCursor(targetPos)
+			mh.editor.StartOrUpdateSelection()
+			return true
+		}
+
+		// --- Initial click: move cursor, clear selection, enter drag state ---
+		mh.editor.SetCursor(targetPos)
 		mh.editor.ClearSelection()
+		if mh.currentMode == ModeVisual {
+			mh.currentMode = ModeNormal
+			mh.statusBar.SetTemporaryMessage("")
+		}
+		mh.mouseDragging = true
+		mh.mouseDragStart = targetPos
+		return true
+	}
+
+	// Button1 released or no button: end drag
+	if mh.mouseDragging {
+		mh.mouseDragging = false
+		// If selection is active after drag, enter Visual mode
+		if _, _, ok := mh.editor.GetSelection(); ok {
+			mh.currentMode = ModeVisual
+			mh.statusBar.SetTemporaryMessage("-- VISUAL --")
+		}
 		return true
 	}
 

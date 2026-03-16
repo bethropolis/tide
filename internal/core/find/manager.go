@@ -509,7 +509,231 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	return replaceCount, nil
 }
 
-// Utilities for byte offset / rune index conversion
+// ReplaceAll replaces all occurrences of pattern across every line in the buffer.
+// Each replacement is recorded individually in history; the caller is responsible
+// for wrapping the call in BeginTransaction/EndTransaction for atomic undo.
+func (m *Manager) ReplaceAll(patternStr, replacement string) (int, error) {
+	if patternStr == "" {
+		return 0, fmt.Errorf("search pattern cannot be empty")
+	}
+
+	re, err := regexp.Compile(patternStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid search pattern: %w", err)
+	}
+
+	buf := m.editor.GetBuffer()
+	eventMgr := m.editor.GetEventManager()
+	histMgr := m.editor.GetHistoryManager()
+	cursorBefore := m.editor.GetCursor()
+
+	totalReplaced := 0
+	lineCount := buf.LineCount()
+
+	for lineIdx := 0; lineIdx < lineCount; lineIdx++ {
+		originalLineBytes, err := buf.Line(lineIdx)
+		if err != nil {
+			continue
+		}
+
+		matches := re.FindAllIndex(originalLineBytes, -1)
+		if len(matches) == 0 {
+			continue
+		}
+
+		// Rebuild the line with all replacements applied
+		var finalLine bytes.Buffer
+		lastIndex := 0
+		for _, loc := range matches {
+			finalLine.Write(originalLineBytes[lastIndex:loc[0]])
+			finalLine.Write([]byte(replacement))
+			lastIndex = loc[1]
+			totalReplaced++
+		}
+		finalLine.Write(originalLineBytes[lastIndex:])
+		newLineBytes := finalLine.Bytes()
+
+		// Delete original line content
+		originalStartPos := types.Position{Line: lineIdx, Col: 0}
+		originalEndCol := utf8.RuneCount(originalLineBytes)
+		originalEndPos := types.Position{Line: lineIdx, Col: originalEndCol}
+
+		editInfoDel, errDel := buf.Delete(originalStartPos, originalEndPos)
+		if errDel != nil {
+			return totalReplaced, fmt.Errorf("replace all failed during delete on line %d: %w", lineIdx, errDel)
+		}
+
+		// Record the delete for undo
+		if histMgr != nil {
+			histMgr.RecordChange(history.Change{
+				Type:          history.DeleteAction,
+				Text:          originalLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   originalEndPos,
+				CursorBefore:  cursorBefore,
+			})
+		}
+
+		// Insert new line content
+		editInfoIns, errIns := buf.Insert(originalStartPos, newLineBytes)
+		if errIns != nil {
+			return totalReplaced, fmt.Errorf("replace all failed during insert on line %d: %w", lineIdx, errIns)
+		}
+
+		// Record the insert for undo
+		if histMgr != nil {
+			newEndCol := utf8.RuneCount(newLineBytes)
+			histMgr.RecordChange(history.Change{
+				Type:          history.InsertAction,
+				Text:          newLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   types.Position{Line: lineIdx, Col: newEndCol},
+				CursorBefore:  originalStartPos,
+			})
+		}
+
+		// After insertion the line count may change if newLineBytes contains newlines.
+		// Recalculate lineCount for safety.
+		newLineCount := buf.LineCount()
+		delta := newLineCount - lineCount
+		lineCount = newLineCount
+		lineIdx += delta // skip any newly-inserted lines
+
+		// Dispatch events
+		netEditInfo := types.EditInfo{
+			StartIndex:     editInfoDel.StartIndex,
+			StartPosition:  editInfoDel.StartPosition,
+			OldEndIndex:    editInfoDel.OldEndIndex,
+			OldEndPosition: editInfoDel.OldEndPosition,
+			NewEndIndex:    editInfoIns.NewEndIndex,
+			NewEndPosition: editInfoIns.NewEndPosition,
+		}
+		if eventMgr != nil {
+			eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: netEditInfo})
+		}
+	}
+
+	if totalReplaced > 0 {
+		m.editor.SetCursor(types.Position{Line: 0, Col: 0})
+		m.editor.ScrollToCursor()
+	}
+
+	logger.DebugTagf("find", "ReplaceAll: Replaced %d occurrence(s) of '%s'", totalReplaced, patternStr)
+	return totalReplaced, nil
+}
+
+// ReplaceInRange replaces all occurrences of pattern in the given line range [startLine, endLine].
+// Each replacement is recorded individually; wrap with Begin/EndTransaction for atomic undo.
+func (m *Manager) ReplaceInRange(patternStr, replacement string, startLine, endLine int) (int, error) {
+	if patternStr == "" {
+		return 0, fmt.Errorf("search pattern cannot be empty")
+	}
+
+	re, err := regexp.Compile(patternStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid search pattern: %w", err)
+	}
+
+	buf := m.editor.GetBuffer()
+	eventMgr := m.editor.GetEventManager()
+	histMgr := m.editor.GetHistoryManager()
+	cursorBefore := m.editor.GetCursor()
+	lineCount := buf.LineCount()
+
+	if startLine < 0 {
+		startLine = 0
+	}
+	if endLine >= lineCount {
+		endLine = lineCount - 1
+	}
+
+	totalReplaced := 0
+
+	for lineIdx := startLine; lineIdx <= endLine; lineIdx++ {
+		originalLineBytes, err := buf.Line(lineIdx)
+		if err != nil {
+			continue
+		}
+
+		matches := re.FindAllIndex(originalLineBytes, -1)
+		if len(matches) == 0 {
+			continue
+		}
+
+		var finalLine bytes.Buffer
+		lastIndex := 0
+		for _, loc := range matches {
+			finalLine.Write(originalLineBytes[lastIndex:loc[0]])
+			finalLine.Write([]byte(replacement))
+			lastIndex = loc[1]
+			totalReplaced++
+		}
+		finalLine.Write(originalLineBytes[lastIndex:])
+		newLineBytes := finalLine.Bytes()
+
+		originalStartPos := types.Position{Line: lineIdx, Col: 0}
+		originalEndCol := utf8.RuneCount(originalLineBytes)
+		originalEndPos := types.Position{Line: lineIdx, Col: originalEndCol}
+
+		editInfoDel, errDel := buf.Delete(originalStartPos, originalEndPos)
+		if errDel != nil {
+			return totalReplaced, fmt.Errorf("range replace failed during delete on line %d: %w", lineIdx, errDel)
+		}
+
+		if histMgr != nil {
+			histMgr.RecordChange(history.Change{
+				Type:          history.DeleteAction,
+				Text:          originalLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   originalEndPos,
+				CursorBefore:  cursorBefore,
+			})
+		}
+
+		editInfoIns, errIns := buf.Insert(originalStartPos, newLineBytes)
+		if errIns != nil {
+			return totalReplaced, fmt.Errorf("range replace failed during insert on line %d: %w", lineIdx, errIns)
+		}
+
+		if histMgr != nil {
+			newEndCol := utf8.RuneCount(newLineBytes)
+			histMgr.RecordChange(history.Change{
+				Type:          history.InsertAction,
+				Text:          newLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   types.Position{Line: lineIdx, Col: newEndCol},
+				CursorBefore:  originalStartPos,
+			})
+		}
+
+		// Recalculate adjusted line count and shift end boundary accordingly
+		newLineCount := buf.LineCount()
+		delta := newLineCount - lineCount
+		lineCount = newLineCount
+		endLine += delta
+		lineIdx += delta
+
+		netEditInfo := types.EditInfo{
+			StartIndex:     editInfoDel.StartIndex,
+			StartPosition:  editInfoDel.StartPosition,
+			OldEndIndex:    editInfoDel.OldEndIndex,
+			OldEndPosition: editInfoDel.OldEndPosition,
+			NewEndIndex:    editInfoIns.NewEndIndex,
+			NewEndPosition: editInfoIns.NewEndPosition,
+		}
+		if eventMgr != nil {
+			eventMgr.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: netEditInfo})
+		}
+	}
+
+	if totalReplaced > 0 {
+		m.editor.SetCursor(cursorBefore) // Keep cursor at original position for range replace
+		m.editor.ScrollToCursor()
+	}
+
+	logger.DebugTagf("find", "ReplaceInRange: Replaced %d occurrence(s) in lines %d-%d", totalReplaced, startLine, endLine)
+	return totalReplaced, nil
+}
 func runeIndexToByteOffset(line []byte, runeIndex int) int {
 	if runeIndex <= 0 {
 		return 0

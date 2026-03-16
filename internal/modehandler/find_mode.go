@@ -58,6 +58,7 @@ func (mh *ModeHandler) cancelFindMode() {
 	mh.currentMode = ModeNormal
 	mh.findBuffer = ""
 	mh.editor.ClearHighlights() // Always clear highlights when canceling
+	mh.editor.MarkAllDirty()    // Clearing highlights affects all visible lines
 	mh.statusBar.SetTemporaryMessage("")
 	logger.Debugf("ModeHandler: Canceled Find Mode")
 }
@@ -76,6 +77,8 @@ func (mh *ModeHandler) executeFind(forward bool, isSubsequent bool) {
 			mh.statusBar.SetTemporaryMessage("Invalid pattern: %s", err)
 			return
 		}
+		// Search highlights affect all visible lines; force a full redraw.
+		mh.editor.MarkAllDirty()
 	}
 
 	// Get the findManager and use it directly

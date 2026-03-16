@@ -31,7 +31,7 @@ guide.md
 *.log
 
 # tide build
-tide
+/tide
 
 # tide cache
 tide_cache
@@ -40,3 +40,4 @@ fix.md
 theme.toml
 *.txt
 config.toml
+progress.md

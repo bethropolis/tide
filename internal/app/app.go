@@ -57,7 +57,10 @@ func NewApp(filePath string) (*App, error) {
 
 	loadErr := buf.Load(filePath)
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-		logger.Warnf("Warning: error loading file '%s': %v", filePath, loadErr)
+		logger.Errorf("Critical error: failed to load file '%s': %v", filePath, loadErr)
+		// Close TUI before returning error since we initialized it
+		tuiManager.Close()
+		return nil, fmt.Errorf("failed to open file '%s': %w", filePath, loadErr)
 	}
 
 	appInstance := &App{
@@ -97,9 +100,8 @@ func NewApp(filePath string) (*App, error) {
 	modeHandler := modehandler.New(modeHandlerCfg)
 	appInstance.modeHandler = modeHandler
 
-	editor.SetEventManager(appInstance.eventManager)
-
 	appInstance.editorAPI = newEditorAPI(appInstance)
+	modeHandler.SetAPI(appInstance.editorAPI)
 
 	commands.RegisterAppCommands(appInstance.editorAPI, appInstance)
 
@@ -131,9 +133,31 @@ func NewApp(filePath string) (*App, error) {
 			} else {
 				logger.Warnf("App: Highlight manager is nil, cannot process buffer modification.")
 			}
+			// Mark affected lines dirty for delta rendering.
+			ed := appInstance.getActiveEditor()
+			startLine := int(data.Edit.StartPosition.Row)
+			newEndLine := int(data.Edit.NewEndPosition.Row)
+			oldEndLine := int(data.Edit.OldEndPosition.Row)
+			// When the edit touches multiple lines, force a full redraw so that
+			// any inserted/deleted rows below the edit point are refreshed.
+			if newEndLine > startLine || oldEndLine > startLine {
+				ed.MarkAllDirty()
+			} else {
+				ed.MarkDirty(startLine)
+			}
 		} else {
 			logger.Warnf("App: Received BufferModified event with unexpected data type: %T", e.Data)
 		}
+		return false
+	})
+
+	// When the highlight manager finishes a background pass, mark all lines dirty
+	// and request a redraw so the new highlights appear.
+	appInstance.eventManager.Subscribe(event.TypeHighlightComplete, func(e event.Event) bool {
+		if ed := appInstance.getActiveEditor(); ed != nil {
+			ed.MarkAllDirty()
+		}
+		appInstance.requestRedraw()
 		return false
 	})
 
@@ -142,37 +166,41 @@ func NewApp(filePath string) (*App, error) {
 	width, height := tuiManager.Size()
 	editor.SetViewSize(width, height-config.StatusBarHeight)
 
-	logger.DebugTagf("highlight", "App: Beginning initial synchronous syntax highlight process...")
+	logger.DebugTagf("highlight", "App: Beginning initial asynchronous syntax highlight process...")
 	lang, queryBytes := appInstance.highlighterService.GetLanguage(filePath)
 	if lang != nil {
 		logger.DebugTagf("highlight", "App: Language detected for '%s', proceeding with highlighting", filePath)
 
-		initialCtx := context.Background()
-		bufContent := buf.Bytes()
-		logger.DebugTagf("highlight", "App: Buffer size for initial highlighting: %d bytes", len(bufContent))
+		bufContent := buf.Bytes() // capture bytes to avoid race and block
+		go func() {
+			logger.DebugTagf("highlight", "App: Calling highlighter.HighlightBuffer asynchronously...")
+			startTime := time.Now()
+			// Background context
+			initialCtx := context.Background()
+			initialHighlights, initialTree, err := appInstance.highlighterService.HighlightBuffer(initialCtx, bufContent, lang, queryBytes, nil)
+			duration := time.Since(startTime)
 
-		logger.DebugTagf("highlight", "App: Calling highlighter.HighlightBuffer synchronously...")
-		startTime := time.Now()
-		initialHighlights, initialTree, err := appInstance.highlighterService.HighlightBuffer(initialCtx, buf.Bytes(), lang, queryBytes, nil) // <<< Pass buf.Bytes()
-		duration := time.Since(startTime)
-
-		if err != nil {
-			logger.Warnf("App: Initial synchronous highlighting failed: %v", err)
-		} else {
-			highlightCount := 0
-			for _, ranges := range initialHighlights {
-				highlightCount += len(ranges)
-			}
-			logger.DebugTagf("highlight", "App: Initial sync highlighting complete in %v. Found %d highlight ranges across %d lines.",
-				duration, highlightCount, len(initialHighlights))
-
-			if hm := editor.GetHighlightManager(); hm != nil {
-				hm.UpdateHighlights(initialHighlights, initialTree)
-				logger.DebugTagf("highlight", "App: Core highlight manager state updated successfully.")
+			if err != nil {
+				logger.Warnf("App: Initial async highlighting failed: %v", err)
 			} else {
-				logger.Warnf("App: Highlight manager is nil after sync highlight.")
+				highlightCount := 0
+				for _, ranges := range initialHighlights {
+					highlightCount += len(ranges)
+				}
+				logger.DebugTagf("highlight", "App: Initial async highlighting complete in %v. Found %d highlight ranges across %d lines.",
+					duration, highlightCount, len(initialHighlights))
+
+				// Update core highlight manager and trigger a redraw
+				if hm := editor.GetHighlightManager(); hm != nil {
+					hm.UpdateHighlights(initialHighlights, initialTree)
+					logger.DebugTagf("highlight", "App: Core highlight manager state updated successfully. Requesting redraw.")
+					editor.MarkAllDirty()
+					appInstance.requestRedraw()
+				} else {
+					logger.Warnf("App: Highlight manager is nil after async highlight.")
+				}
 			}
-		}
+		}()
 	} else {
 		logger.DebugTagf("highlight", "App: No language detected for initial highlight of '%s'", filePath)
 		if hm := editor.GetHighlightManager(); hm != nil {
@@ -323,7 +351,8 @@ func (a *App) SetTheme(name string) error {
 		NewThemeName: newTheme.Name,
 	})
 
-	// Force an immediate redraw
+	// Force a full redraw (all lines may have new styling under the new theme)
+	a.getActiveEditor().MarkAllDirty()
 	a.requestRedraw()
 	return nil
 }
@@ -402,9 +431,13 @@ func (a *App) drawEditor() {
 	a.updateStatusBarContent() // Update the status bar with latest info
 
 	// --- Drawing ---
-	a.tuiManager.Clear()
+	// For a full redraw (e.g. first frame, resize, theme change) clear everything.
+	// For incremental redraws, DrawBuffer handles clearing only dirty rows.
+	if ed.NeedsFullRedraw() {
+		a.tuiManager.Clear()
+	}
 
-	// Draw the buffer content
+	// Draw the buffer content (uses dirty-line tracking internally)
 	tui.DrawBuffer(a.tuiManager, ed, a.activeTheme)
 
 	// Draw tab bar if multiple buffers are open

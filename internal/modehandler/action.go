@@ -294,7 +294,10 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	// Post-Action handling
 	newCursor := mh.editor.GetCursor()
 	if actionProcessed && newCursor != originalCursor {
-		mh.eventManager.Dispatch(event.TypeCursorMoved, event.CursorMovedData{NewPosition: newCursor})
+		mh.eventManager.Dispatch(event.TypeCursorMoved, event.CursorMovedData{
+			OldPosition: originalCursor,
+			NewPosition: newCursor,
+		})
 	}
 
 	// Reset force quit flag
@@ -454,6 +457,22 @@ func (mh *ModeHandler) handleActionVisual(actionEvent input.ActionEvent, ev *tce
 		return res
 	}
 
+	// p in visual mode: paste over selection (delete selection, then paste)
+	if actionEvent.Action == input.ActionPaste || (actionEvent.Action == input.ActionInsertRune && actionEvent.Rune == 'p') {
+		res := mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	// P in visual mode: paste-before over selection
+	if actionEvent.Action == input.ActionPasteBefore || (actionEvent.Action == input.ActionInsertRune && actionEvent.Rune == 'P') {
+		res := mh.executeAction(input.ActionPasteBefore, input.ActionEvent{Action: input.ActionPasteBefore}, ev)
+		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
 	return false
 }
 
@@ -519,6 +538,18 @@ func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev 
 		case 'd', 'x':
 			// Delete selected lines then return to Normal
 			res := mh.executeAction(input.ActionCut, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'p':
+			// Paste over selected lines then return to Normal
+			res := mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
+			mh.editor.ClearSelection()
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'P':
+			// Paste-before over selected lines then return to Normal
+			res := mh.executeAction(input.ActionPasteBefore, input.ActionEvent{Action: input.ActionPasteBefore}, ev)
 			mh.editor.ClearSelection()
 			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 			return res

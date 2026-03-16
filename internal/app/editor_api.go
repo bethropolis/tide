@@ -94,6 +94,16 @@ func (api *appEditorAPI) Replace(pattern, replacement string, global bool) (int,
 	return api.app.getActiveEditor().Replace(pattern, replacement, global)
 }
 
+// ReplaceAll replaces all occurrences of pattern across the entire buffer (:%s).
+func (api *appEditorAPI) ReplaceAll(pattern, replacement string) (int, error) {
+	return api.app.getActiveEditor().ReplaceAll(pattern, replacement)
+}
+
+// ReplaceInRange replaces all occurrences of pattern in [startLine, endLine] (:'<,'>s).
+func (api *appEditorAPI) ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) {
+	return api.app.getActiveEditor().ReplaceInRange(pattern, replacement, startLine, endLine)
+}
+
 // --- Cursor & Viewport ---
 
 func (api *appEditorAPI) GetCursor() types.Position {

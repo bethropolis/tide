@@ -19,6 +19,13 @@ type PieceTable struct {
 
 	filePath string
 	modified bool
+
+	// Cached flat byte content and line-start offsets.
+	// lineOffsetsDirty is set to true after every mutation; the caches are
+	// rebuilt lazily by ensureCache() on the next read.
+	cachedBytes []byte
+	lineOffsets []int // lineOffsets[i] = byte offset of line i in cachedBytes
+	cacheValid  bool
 }
 
 type piece struct {
@@ -64,6 +71,7 @@ func (pt *PieceTable) Load(filePath string) error {
 	pt.pieces = []piece{{buffer: originalBuffer, start: 0, length: len(content)}}
 	pt.filePath = filePath
 	pt.modified = false
+	pt.invalidateCache()
 	return nil
 }
 
@@ -105,7 +113,16 @@ func (pt *PieceTable) GetText(start, end types.Position) string {
 	return string(bytes[startOff:endOff])
 }
 
-func (pt *PieceTable) Bytes() []byte {
+// ensureCache rebuilds cachedBytes and lineOffsets if the cache is invalid.
+// lineOffsets[i] is the byte offset of the start of line i in cachedBytes.
+// The final entry lineOffsets[n] points one past the last byte (== len(cachedBytes))
+// so that the length of line i is lineOffsets[i+1] - lineOffsets[i] - 1 (excluding '\n').
+func (pt *PieceTable) ensureCache() {
+	if pt.cacheValid {
+		return
+	}
+
+	// Rebuild flat byte slice
 	var result bytes.Buffer
 	for _, p := range pt.pieces {
 		if p.buffer == originalBuffer {
@@ -118,39 +135,86 @@ func (pt *PieceTable) Bytes() []byte {
 			}
 		}
 	}
-	return result.Bytes()
+	pt.cachedBytes = result.Bytes()
+
+	// Build line-start offset table
+	offsets := make([]int, 0, 64)
+	offsets = append(offsets, 0)
+	for i, b := range pt.cachedBytes {
+		if b == '\n' {
+			offsets = append(offsets, i+1)
+		}
+	}
+	pt.lineOffsets = offsets
+	pt.cacheValid = true
+}
+
+// invalidateCache marks the cache as stale. Call after every mutation.
+func (pt *PieceTable) invalidateCache() {
+	pt.cacheValid = false
+	pt.cachedBytes = nil
+	pt.lineOffsets = nil
+}
+
+func (pt *PieceTable) Bytes() []byte {
+	pt.ensureCache()
+	// Return a copy to prevent callers from mutating our cache.
+	out := make([]byte, len(pt.cachedBytes))
+	copy(out, pt.cachedBytes)
+	return out
 }
 
 func (pt *PieceTable) Lines() [][]byte {
-	return bytes.Split(pt.Bytes(), []byte{'\n'})
+	pt.ensureCache()
+	return bytes.Split(pt.cachedBytes, []byte{'\n'})
 }
 
 func (pt *PieceTable) Line(index int) ([]byte, error) {
-	lines := pt.Lines()
-	if index < 0 || index >= len(lines) {
+	pt.ensureCache()
+	offsets := pt.lineOffsets
+	lineCount := len(offsets)
+	if index < 0 || index >= lineCount {
 		return nil, fmt.Errorf("line index out of bounds")
 	}
-	return lines[index], nil
+	start := offsets[index]
+	var end int
+	if index+1 < len(offsets) {
+		end = offsets[index+1] - 1 // exclude the '\n'
+	} else {
+		end = len(pt.cachedBytes)
+	}
+	if end < start {
+		end = start
+	}
+	// Return a copy so callers cannot corrupt the cache.
+	out := make([]byte, end-start)
+	copy(out, pt.cachedBytes[start:end])
+	return out, nil
 }
 
 func (pt *PieceTable) LineCount() int {
-	return len(pt.Lines())
+	pt.ensureCache()
+	return len(pt.lineOffsets)
 }
 
 // Calculate absolute byte offset from a Position.
 // pos.Col is treated as a rune index.
 func (pt *PieceTable) positionToOffset(pos types.Position) int {
-	lines := pt.Lines()
-	if pos.Line >= len(lines) {
-		return len(pt.Bytes())
+	pt.ensureCache()
+	offsets := pt.lineOffsets
+	if pos.Line >= len(offsets) {
+		return len(pt.cachedBytes)
 	}
 
-	offset := 0
-	for i := 0; i < pos.Line; i++ {
-		offset += len(lines[i]) + 1 // +1 for '\n'
+	lineStart := offsets[pos.Line]
+	var lineEnd int
+	if pos.Line+1 < len(offsets) {
+		lineEnd = offsets[pos.Line+1] - 1 // exclude '\n'
+	} else {
+		lineEnd = len(pt.cachedBytes)
 	}
+	lineBytes := pt.cachedBytes[lineStart:lineEnd]
 
-	lineBytes := lines[pos.Line]
 	byteOffInLine := 0
 	runeCount := 0
 	for i := 0; i < len(lineBytes); {
@@ -169,26 +233,32 @@ func (pt *PieceTable) positionToOffset(pos types.Position) int {
 		byteOffInLine = len(lineBytes)
 	}
 
-	return offset + byteOffInLine
+	return lineStart + byteOffInLine
 }
 
 // getBufferStateForEdit calculates byte offsets and sitter.Point for a given types.Position.
 // pos.Col is treated as a rune index and converted to byte offset for tree-sitter.
 func (pt *PieceTable) getBufferStateForEdit(pos types.Position) (byteOffset uint32, point sitter.Point) {
-	lines := pt.Lines()
-	byteOff := uint32(0)
+	pt.ensureCache()
+	offsets := pt.lineOffsets
 
-	// Calculate total bytes up to the start of the target line
-	for i := 0; i < pos.Line; i++ {
-		if i < len(lines) {
-			byteOff += uint32(len(lines[i])) + 1 // +1 for the newline character
-		}
+	var lineStart int
+	if pos.Line < len(offsets) {
+		lineStart = offsets[pos.Line]
+	} else {
+		lineStart = len(pt.cachedBytes)
 	}
 
 	// Calculate byte offset within the target line (converting rune col to bytes)
 	colByteOffset := uint32(0)
-	if pos.Line >= 0 && pos.Line < len(lines) {
-		currentLine := lines[pos.Line]
+	if pos.Line >= 0 && pos.Line < len(offsets) {
+		var lineEnd int
+		if pos.Line+1 < len(offsets) {
+			lineEnd = offsets[pos.Line+1] - 1 // exclude '\n'
+		} else {
+			lineEnd = len(pt.cachedBytes)
+		}
+		currentLine := pt.cachedBytes[lineStart:lineEnd]
 		byteOffInLine := 0
 		runeCount := 0
 		for i := 0; i < len(currentLine); {
@@ -203,14 +273,13 @@ func (pt *PieceTable) getBufferStateForEdit(pos types.Position) (byteOffset uint
 			runeCount++
 			i += size
 		}
-		// Handle case where col is at/past the end of the line
 		if runeCount < pos.Col {
 			byteOffInLine = len(currentLine)
 		}
 		colByteOffset = uint32(byteOffInLine)
-		byteOff += colByteOffset
 	}
 
+	byteOff := uint32(lineStart) + colByteOffset
 	point = sitter.Point{
 		Row:    uint32(pos.Line),
 		Column: colByteOffset, // Point column is BYTES within the line
@@ -238,8 +307,7 @@ func (pt *PieceTable) Insert(pos types.Position, text []byte) (types.EditInfo, e
 		pt.add = append(pt.add, text...)
 		pt.pieces[0] = piece{buffer: addBuffer, start: 0, length: len(text)}
 		pt.modified = true
-
-		// Calculate NewEndPosition
+		pt.invalidateCache()
 		textLen := uint32(len(text))
 		editInfo.NewEndIndex = startIndex + textLen
 		numLinesInserted := bytes.Count(text, []byte("\n"))
@@ -292,6 +360,7 @@ func (pt *PieceTable) Insert(pos types.Position, text []byte) (types.EditInfo, e
 
 	pt.pieces = newPieces
 	pt.modified = true
+	pt.invalidateCache()
 
 	// Calculate NewEndPosition
 	textLen := uint32(len(text))
@@ -332,28 +401,45 @@ func (pt *PieceTable) Delete(start, end types.Position) (types.EditInfo, error) 
 		return editInfo, nil
 	}
 
-	// A simpler (but less optimal) approach for now is to rebuild from Bytes()
-	// to ensure correctness before optimizing
-	content := pt.Bytes()
+	// A more optimal approach using piece manipulation
 
-	// Ensure bounds are safe
-	if startOff > len(content) {
-		startOff = len(content)
+	// Use findPiece to locate starting and ending pieces
+	startPieceIdx, startPieceOffset := pt.findPiece(startOff)
+	endPieceIdx, endPieceOffset := pt.findPiece(endOff)
+
+	var newPieces []piece
+
+	// Prefix pieces (before the deleted region)
+	newPieces = append(newPieces, pt.pieces[:startPieceIdx]...)
+
+	// Handle the start piece (if we keep part of it)
+	if startPieceOffset > 0 {
+		startPiece := pt.pieces[startPieceIdx]
+		newPieces = append(newPieces, piece{
+			buffer: startPiece.buffer,
+			start:  startPiece.start,
+			length: startPieceOffset,
+		})
 	}
-	if endOff > len(content) {
-		endOff = len(content)
+
+	// Handle the end piece (if we keep part of it)
+	if endPieceOffset < pt.pieces[endPieceIdx].length {
+		endPiece := pt.pieces[endPieceIdx]
+		newPieces = append(newPieces, piece{
+			buffer: endPiece.buffer,
+			start:  endPiece.start + endPieceOffset,
+			length: endPiece.length - endPieceOffset,
+		})
 	}
 
-	// Perform deletion by keeping parts outside the range
-	var newContent []byte
-	newContent = append(newContent, content[:startOff]...)
-	newContent = append(newContent, content[endOff:]...)
+	// Suffix pieces (after the deleted region)
+	if endPieceIdx+1 < len(pt.pieces) {
+		newPieces = append(newPieces, pt.pieces[endPieceIdx+1:]...)
+	}
 
-	pt.original = newContent
-	pt.add = []byte{}
-	pt.pieces = []piece{{buffer: originalBuffer, start: 0, length: len(newContent)}}
-
+	pt.pieces = newPieces
 	pt.modified = true
+	pt.invalidateCache()
 
 	return editInfo, nil
 }
