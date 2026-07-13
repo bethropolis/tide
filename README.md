@@ -18,17 +18,17 @@ Tide is a modern, extensible terminal-based text editor written purely in Go. It
 
 ---
 
-## ✨ Features
+## Features
 
-*   🚀 **Fast, Async Syntax Highlighting:** Uses Tree-sitter for accurate, performant highlighting that updates dynamically via debounced, incremental parsing.
-*   🎨 **Theming Engine:**
+*   **Fast, Async Syntax Highlighting:** Uses Tree-sitter for accurate, performant highlighting that updates dynamically via debounced, incremental parsing.
+*   **Theming Engine:**
     *   Load custom themes from TOML files in `~/.config/tide/themes/`.
     *   Set the active theme via `~/.config/tide/theme.toml`.
     *   Live theme switching with the `:theme <name>` command.
     *   Supports True Color hex codes (`#RRGGBB`).
     *   Includes a comfortable built-in default dark theme ("Dark comfort").
-*   🌐 **Multi-Language Support:** Built-in support for Go, Python, JavaScript, JSON, and Rust. Easily extensible for more languages.
-*   ✏️ **Core Editing:**
+*   **Multi-Language Support:** Built-in support for Go, Python, JavaScript, JSON, and Rust. Easily extensible for more languages.
+*   **Core Editing:**
     *   Modal editing (Normal, Command, Find modes).
     *   Text insertion, deletion, line handling.
     *   Undo/Redo stack.
@@ -38,15 +38,15 @@ Tide is a modern, extensible terminal-based text editor written purely in Go. It
     *   Auto Indentation.
     *   Line numbering.
     *   Configurable tab width rendering.
-*   ⚙️ **Configuration:**
+*   **Configuration:**
     *   Load settings (editor, logger) from `~/.config/tide/config.toml`.
     *   Command-line flag overrides for key settings.
     *   Advanced, filterable logging system (`slog` based).
-*   🧩 **Modular & Extensible:** Clean architecture with a basic plugin system (example: Word Count).
+*   **Modular & Extensible:** Clean architecture with a basic plugin system (example: Word Count).
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Installation
 
@@ -80,7 +80,7 @@ tide --loglevel debug --config config.toml main.rs
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
 Tide uses TOML files located in `~/.config/tide/`.
 
@@ -162,7 +162,7 @@ Tide uses TOML files located in `~/.config/tide/`.
 
 ---
 
-## ⌨️ Keybindings (Default - Normal Mode)
+## Keybindings (Default - Normal Mode)
 
 <details>
   <summary>Show Default Keybindings</summary>
@@ -200,7 +200,7 @@ Tide uses TOML files located in `~/.config/tide/`.
 
 ---
 
-## 📜 Commands (in Command Mode `:`)
+## Commands (in Command Mode `:`)
 
 <details>
   <summary>Show Commands</summary>
@@ -217,7 +217,7 @@ Tide uses TOML files located in `~/.config/tide/`.
 
 ---
 
-## 🚧 Known Limitations / Future Plans
+## Known Limitations / Future Plans
 
 *   **Terminal Mouse Selection:** Native terminal selection includes line numbers. Use internal Yank/Paste (`Ctrl+X`/`Ctrl+V`) for code. Full mouse support is planned.
 *   **Undo for Global Replace/Complex Ops:** Undo works for single changes but not yet reliably for global replaces or potentially some plugin actions.
@@ -229,10 +229,10 @@ Tide uses TOML files located in `~/.config/tide/`.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
 
-## 📜 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

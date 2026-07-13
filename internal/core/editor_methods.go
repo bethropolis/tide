@@ -185,6 +185,66 @@ func (e *Editor) WordEnd() {
 	}
 }
 
+// GoToFileStart moves the cursor to the first line of the buffer (Vim 'gg').
+func (e *Editor) GoToFileStart() {
+	if e.cursorManager == nil {
+		return
+	}
+	e.cursorManager.SetPosition(types.Position{Line: 0, Col: 0})
+	e.cursorManager.ScrollToCursor()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
+// GoToFileEnd moves the cursor to the last line of the buffer (Vim 'G').
+func (e *Editor) GoToFileEnd() {
+	if e.cursorManager == nil || e.buffer == nil {
+		return
+	}
+	lastLine := e.buffer.LineCount() - 1
+	if lastLine < 0 {
+		lastLine = 0
+	}
+	e.cursorManager.SetPosition(types.Position{Line: lastLine, Col: 0})
+	e.cursorManager.ScrollToCursor()
+	if e.selectionManager != nil && e.selectionManager.IsSelecting() {
+		e.selectionManager.UpdateSelectionEnd()
+	}
+}
+
+// DeleteWordForward deletes from the cursor to the start of the next word (Vim 'dw').
+func (e *Editor) DeleteWordForward() error {
+	buf := e.GetBuffer()
+	if buf == nil {
+		return nil
+	}
+	start := e.GetCursor()
+	e.WordForward()
+	end := e.GetCursor()
+	if start == end {
+		return nil
+	}
+	_, err := buf.Delete(start, end)
+	return err
+}
+
+// DeleteWordBackward deletes from the cursor back to the start of the current/previous word (Vim 'db').
+func (e *Editor) DeleteWordBackward() error {
+	buf := e.GetBuffer()
+	if buf == nil {
+		return nil
+	}
+	start := e.GetCursor()
+	e.WordBackward()
+	end := e.GetCursor()
+	if start == end {
+		return nil
+	}
+	_, err := buf.Delete(end, start)
+	return err
+}
+
 // Find operations delegated to findManager
 func (e *Editor) Find(term string, startPos types.Position, forward bool) (types.Position, bool) {
 	if e.findManager == nil {
@@ -211,17 +271,17 @@ func (e *Editor) HighlightMatches(term string) error {
 }
 
 // Replace performs a find and replace operation using findManager
-func (e *Editor) Replace(pattern, replacement string, global bool) (int, error) {
+func (e *Editor) Replace(pattern, replacement string, global, caseInsensitive bool) (int, error) {
 	if e.findManager == nil {
 		logger.Warnf("Editor.Replace: findManager is nil")
 		return 0, fmt.Errorf("find manager not initialized")
 	}
-	return e.findManager.Replace(pattern, replacement, global)
+	return e.findManager.Replace(pattern, replacement, global, caseInsensitive)
 }
 
 // ReplaceAll replaces all occurrences of pattern across the entire buffer.
 // Wraps the operation in a history transaction for atomic undo.
-func (e *Editor) ReplaceAll(pattern, replacement string) (int, error) {
+func (e *Editor) ReplaceAll(pattern, replacement string, caseInsensitive bool) (int, error) {
 	if e.findManager == nil {
 		logger.Warnf("Editor.ReplaceAll: findManager is nil")
 		return 0, fmt.Errorf("find manager not initialized")
@@ -230,7 +290,7 @@ func (e *Editor) ReplaceAll(pattern, replacement string) (int, error) {
 	if e.historyManager != nil {
 		e.historyManager.BeginTransaction()
 	}
-	count, err := e.findManager.ReplaceAll(pattern, replacement)
+	count, err := e.findManager.ReplaceAll(pattern, replacement, caseInsensitive)
 	if e.historyManager != nil {
 		e.historyManager.EndTransaction(cursorBefore)
 	}
@@ -239,7 +299,7 @@ func (e *Editor) ReplaceAll(pattern, replacement string) (int, error) {
 
 // ReplaceInRange replaces all occurrences of pattern in [startLine, endLine].
 // Wraps the operation in a history transaction for atomic undo.
-func (e *Editor) ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) {
+func (e *Editor) ReplaceInRange(pattern, replacement string, startLine, endLine int, caseInsensitive bool) (int, error) {
 	if e.findManager == nil {
 		logger.Warnf("Editor.ReplaceInRange: findManager is nil")
 		return 0, fmt.Errorf("find manager not initialized")
@@ -248,7 +308,7 @@ func (e *Editor) ReplaceInRange(pattern, replacement string, startLine, endLine 
 	if e.historyManager != nil {
 		e.historyManager.BeginTransaction()
 	}
-	count, err := e.findManager.ReplaceInRange(pattern, replacement, startLine, endLine)
+	count, err := e.findManager.ReplaceInRange(pattern, replacement, startLine, endLine, caseInsensitive)
 	if e.historyManager != nil {
 		e.historyManager.EndTransaction(cursorBefore)
 	}

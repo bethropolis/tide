@@ -12,6 +12,7 @@ type Manager struct {
 	// --- State owned by Selection Manager ---
 	selecting      bool
 	linewise       bool           // True when in line-wise visual mode (Vim 'V')
+	blockwise      bool           // True when in block-wise visual mode (Vim Ctrl+V)
 	selectionStart types.Position // Anchor point
 	selectionEnd   types.Position // Usually follows cursor
 }
@@ -70,6 +71,7 @@ func (m *Manager) ClearSelection() {
 	}
 	m.selecting = false
 	m.linewise = false
+	m.blockwise = false
 	m.selectionStart = types.Position{Line: -1, Col: -1}
 	m.selectionEnd = types.Position{Line: -1, Col: -1}
 }
@@ -82,6 +84,43 @@ func (m *Manager) IsLinewise() bool {
 // SetLinewise sets whether the selection is line-wise.
 func (m *Manager) SetLinewise(lw bool) {
 	m.linewise = lw
+	if lw {
+		m.blockwise = false
+	}
+}
+
+// IsBlockwise returns whether the selection is block-wise (Vim Ctrl+V mode).
+func (m *Manager) IsBlockwise() bool {
+	return m.blockwise
+}
+
+// SetBlockwise sets whether the selection is block-wise.
+func (m *Manager) SetBlockwise(bw bool) {
+	m.blockwise = bw
+	if bw {
+		m.linewise = false
+	}
+}
+
+// GetBlockRange returns the normalized block selection as a rectangle.
+// startLine/endLine define the row range, startCol/endCol define the column range.
+// Each line in the block has the same column span [startCol, endCol].
+func (m *Manager) GetBlockRange() (startLine, endLine, startCol, endCol int) {
+	if !m.selecting || m.selectionStart.Line < 0 {
+		return -1, -1, -1, -1
+	}
+
+	start := m.selectionStart
+	end := m.selectionEnd
+
+	if start.Line > end.Line {
+		start, end = end, start
+	}
+	if start.Col > end.Col {
+		start.Col, end.Col = end.Col, start.Col
+	}
+
+	return start.Line, end.Line, start.Col, end.Col
 }
 
 // StartOrUpdateSelection is called when selection should start or extend (e.g., Shift+Move).

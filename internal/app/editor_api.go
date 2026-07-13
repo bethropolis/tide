@@ -2,8 +2,7 @@
 package app
 
 import (
-	"fmt" // Keep
-	// Keep for now
+	"fmt"
 	"strings"
 
 	"github.com/bethropolis/tide/internal/commands"
@@ -12,6 +11,7 @@ import (
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
 	"github.com/bethropolis/tide/internal/theme"
+	"github.com/bethropolis/tide/internal/tui"
 	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
@@ -89,19 +89,18 @@ func (api *appEditorAPI) DeleteRange(start, end types.Position) error {
 }
 
 // Replace implements the Replace method for substitution command
-func (api *appEditorAPI) Replace(pattern, replacement string, global bool) (int, error) {
-	// Delegate to editor's Replace method which delegates to findManager.Replace
-	return api.app.getActiveEditor().Replace(pattern, replacement, global)
+func (api *appEditorAPI) Replace(pattern, replacement string, global, caseInsensitive bool) (int, error) {
+	return api.app.getActiveEditor().Replace(pattern, replacement, global, caseInsensitive)
 }
 
 // ReplaceAll replaces all occurrences of pattern across the entire buffer (:%s).
-func (api *appEditorAPI) ReplaceAll(pattern, replacement string) (int, error) {
-	return api.app.getActiveEditor().ReplaceAll(pattern, replacement)
+func (api *appEditorAPI) ReplaceAll(pattern, replacement string, caseInsensitive bool) (int, error) {
+	return api.app.getActiveEditor().ReplaceAll(pattern, replacement, caseInsensitive)
 }
 
 // ReplaceInRange replaces all occurrences of pattern in [startLine, endLine] (:'<,'>s).
-func (api *appEditorAPI) ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) {
-	return api.app.getActiveEditor().ReplaceInRange(pattern, replacement, startLine, endLine)
+func (api *appEditorAPI) ReplaceInRange(pattern, replacement string, startLine, endLine int, caseInsensitive bool) (int, error) {
+	return api.app.getActiveEditor().ReplaceInRange(pattern, replacement, startLine, endLine, caseInsensitive)
 }
 
 // --- Cursor & Viewport ---
@@ -125,8 +124,12 @@ func (api *appEditorAPI) DispatchEvent(eventType event.Type, data interface{}) {
 	api.app.eventManager.Dispatch(eventType, data) // Delegate to app's manager
 }
 
-func (api *appEditorAPI) SubscribeEvent(eventType event.Type, handler event.Handler) {
-	api.app.eventManager.Subscribe(eventType, handler) // Delegate to app's manager
+func (api *appEditorAPI) SubscribeEvent(eventType event.Type, handler event.Handler) event.SubscriptionID {
+	return api.app.eventManager.Subscribe(eventType, handler)
+}
+
+func (api *appEditorAPI) UnsubscribeEvent(eventType event.Type, id event.SubscriptionID) {
+	api.app.eventManager.Unsubscribe(eventType, id)
 }
 
 // --- Command Registration ---
@@ -157,6 +160,24 @@ func (api *appEditorAPI) RegisterThemeCommand(name string, cmdFunc theme.Command
 func (api *appEditorAPI) SetStatusMessage(format string, args ...interface{}) {
 	api.app.statusBar.SetTemporaryMessage(format, args...) // Delegate to status bar
 	api.app.requestRedraw()                                // Ensure redraw to show message
+}
+
+// ShowPicker launches the generic picker overlay with the provided items and
+// callbacks. The picker is shared across the editor — calling this again
+// while another picker is open will replace the active one.
+func (api *appEditorAPI) ShowPicker(title string, items []tui.PickerItem, onSelect func(val string), onCancel func()) {
+	if api.app.picker == nil {
+		// Defensive: should be initialized in NewApp, but keep the editor
+		// running even if a caller accesses the API before construction.
+		api.app.picker = tui.NewPicker(title, items, onSelect)
+	} else {
+		api.app.picker.Title = title
+		api.app.picker.Items = items
+		api.app.picker.OnSelect = onSelect
+		api.app.picker.OnCancel = onCancel
+	}
+	api.app.picker.Activate()
+	api.app.requestRedraw()
 }
 
 // --- Theme Access ---

@@ -4,6 +4,7 @@ import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/input"
 	"github.com/bethropolis/tide/internal/logger"
+	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -25,7 +26,8 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 	isMovementAction := false
 	switch action {
 	case input.ActionMoveUp, input.ActionMoveDown, input.ActionMoveLeft, input.ActionMoveRight,
-		input.ActionMovePageUp, input.ActionMovePageDown, input.ActionMoveHome, input.ActionMoveEnd:
+		input.ActionMovePageUp, input.ActionMovePageDown, input.ActionMoveHome, input.ActionMoveEnd,
+		input.ActionMoveFileStart, input.ActionMoveFileEnd:
 		isMovementAction = true
 	}
 
@@ -59,6 +61,13 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 		mh.currentMode = ModeVisual
 		mh.statusBar.SetTemporaryMessage("-- VISUAL --")
 		logger.Debugf("ModeHandler: Entering Visual Mode")
+
+	case input.ActionEnterVisualBlockMode:
+		mh.editor.StartOrUpdateSelection()
+		mh.editor.SetBlockwise(true)
+		mh.currentMode = ModeVisualBlock
+		mh.statusBar.SetTemporaryMessage("-- VISUAL BLOCK --")
+		logger.Debugf("ModeHandler: Entering Visual Block Mode")
 
 	case input.ActionEnterCommandMode:
 		mh.editor.ClearSelection()
@@ -285,6 +294,36 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
 		}
 
+	case input.ActionDeleteWordForward:
+		if hasHighlights {
+			mh.editor.ClearHighlights()
+		}
+		err := mh.editor.DeleteWordForward()
+		if err != nil {
+			logger.Debugf("Err DeleteWordForward: %v", err)
+			actionProcessed = false
+		} else {
+			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+		}
+
+	case input.ActionDeleteWordBackward:
+		if hasHighlights {
+			mh.editor.ClearHighlights()
+		}
+		err := mh.editor.DeleteWordBackward()
+		if err != nil {
+			logger.Debugf("Err DeleteWordBackward: %v", err)
+			actionProcessed = false
+		} else {
+			mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+		}
+
+	case input.ActionMoveFileStart:
+		mh.editor.GoToFileStart()
+
+	case input.ActionMoveFileEnd:
+		mh.editor.GoToFileEnd()
+
 	case input.ActionUnknown:
 		actionProcessed = false
 	default:
@@ -311,107 +350,228 @@ func (mh *ModeHandler) executeAction(action input.Action, actionEvent input.Acti
 // handleActionInsert handles key events specific to Insert Mode.
 func (mh *ModeHandler) handleActionInsert(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
 	if actionEvent.Action == input.ActionQuit {
+		mh.recordingInsert = false
 		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 	}
-	return mh.executeAction(actionEvent.Action, actionEvent, ev)
+	// Ctrl+V in insert mode should paste, not enter visual block mode
+	if actionEvent.Action == input.ActionEnterVisualBlockMode {
+		actionEvent.Action = input.ActionPaste
+	}
+	// Record edit actions for dot-repeat (only actual edits, not cursor movement)
+	if actionEvent.Action != input.ActionUnknown {
+		if !mh.recordingInsert {
+			mh.lastInsertActions = nil
+			mh.recordingInsert = true
+		}
+		mh.lastInsertActions = append(mh.lastInsertActions, input.ActionEvent{
+			Action: actionEvent.Action,
+			Rune:   actionEvent.Rune,
+		})
+	}
+	processed := mh.executeAction(actionEvent.Action, actionEvent, ev)
+	if processed && mh.onInsertEdit != nil {
+		mh.onInsertEdit()
+	}
+	return processed
 }
 
 // handleActionNormal handles key events specific to Normal Mode.
 func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	// Non-rune actions go directly to executeAction
 	if actionEvent.Action != input.ActionInsertRune && actionEvent.Action != input.ActionUnknown {
 		return mh.executeAction(actionEvent.Action, actionEvent, ev)
 	}
 
 	if actionEvent.Action == input.ActionInsertRune {
-		// Handle pending operators (dd, yy)
+		r := actionEvent.Rune
+
+		// Handle pending operators (dd, yy, dw, db, gg)
 		if mh.pendingOperator != 0 {
 			op := mh.pendingOperator
-			mh.pendingOperator = 0 // reset
 			mh.statusBar.ResetTemporaryMessage()
 
-			if actionEvent.Rune == op {
-				// We have a double operator (dd or yy)
-				mh.editor.ClearSelection()
-				mh.editor.StartOrUpdateSelection()
-				mh.editor.SetLinewise(true) // line-wise selection
-
-				if op == 'd' {
-					return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
-				} else if op == 'y' {
-					return mh.executeAction(input.ActionYank, input.ActionEvent{Action: input.ActionYank}, ev)
+			// gg sequence
+			if op == 'g' && r == 'g' {
+				mh.pendingOperator = 0
+				count := mh.drainCount()
+				if count > 1 {
+					mh.editor.SetCursor(types.Position{Line: count - 1, Col: 0})
+				} else {
+					mh.editor.GoToFileStart()
 				}
+				return true
 			}
-			// If not a double operator, you could handle movements (dw, d$) here in the future
-			// For now, cancel operator if not matched
-			mh.statusBar.SetTemporaryMessage("Operator cancelled")
+			// Cancel pending if not a valid continuation
+			if op == 'g' {
+				mh.pendingOperator = 0
+				mh.statusBar.SetTemporaryMessage("g (pending)")
+				// Fall through to handle this rune as a new key
+			} else {
+				mh.pendingOperator = 0
+				count := mh.drainCount()
+
+				switch {
+				case r == op && (op == 'd' || op == 'y'):
+					mh.editor.ClearSelection()
+					for i := 0; i < count; i++ {
+						mh.editor.StartOrUpdateSelection()
+						mh.editor.SetLinewise(true)
+					}
+					if op == 'd' {
+						return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
+					}
+					return mh.executeAction(input.ActionYank, input.ActionEvent{Action: input.ActionYank}, ev)
+
+				case op == 'd' && r == 'w':
+					for i := 0; i < count; i++ {
+						if err := mh.editor.DeleteWordForward(); err != nil {
+							logger.Debugf("dw error: %v", err)
+						}
+					}
+					mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+					return true
+
+				case op == 'd' && r == 'b':
+					for i := 0; i < count; i++ {
+						if err := mh.editor.DeleteWordBackward(); err != nil {
+							logger.Debugf("db error: %v", err)
+						}
+					}
+					mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+					return true
+				}
+
+				mh.statusBar.SetTemporaryMessage("Operator cancelled")
+				return true
+			}
+		}
+
+		// Count prefix: accumulate digits in normal mode
+		if r >= '1' && r <= '9' {
+			mh.countAccumulator = int(r - '0')
+			mh.statusBar.SetTemporaryMessage("%d", mh.countAccumulator)
+			return true
+		}
+		if r == '0' && mh.countAccumulator > 0 {
+			mh.countAccumulator *= 10
+			mh.statusBar.SetTemporaryMessage("%d", mh.countAccumulator)
 			return true
 		}
 
-		switch actionEvent.Rune {
-		case 'd', 'y':
-			mh.pendingOperator = actionEvent.Rune
-			mh.statusBar.SetTemporaryMessage(string(actionEvent.Rune) + " (pending)")
+		// Resolve count (default 1)
+		count := mh.drainCount()
+
+		// Dot-repeat: replay last insert actions
+		if r == '.' {
+			if len(mh.lastInsertActions) == 0 {
+				mh.statusBar.SetTemporaryMessage("Nothing to repeat")
+				return true
+			}
+			for _, ae := range mh.lastInsertActions {
+				mh.executeAction(ae.Action, ae, ev)
+			}
 			return true
+		}
+
+		// gg / G
+		if r == 'g' && mh.pendingOperator != 'g' {
+			mh.pendingOperator = 'g'
+			mh.statusBar.SetTemporaryMessage("g (pending)")
+			return true
+		}
+
+		// * and # (search word under cursor)
+		if r == '*' || r == '#' {
+			return mh.searchWordUnderCursor(r == '*')
+		}
+
+		switch r {
+		case 'd', 'y':
+			mh.pendingOperator = r
+			mh.statusBar.SetTemporaryMessage(string(r)+" (pending)")
+			return true
+
 		case 'i':
+			for i := 0; i < count-1; i++ {
+				mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+			}
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'a':
-			mh.editor.MoveCursor(0, 1)
+			for i := 0; i < count; i++ {
+				mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+			}
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'v':
 			return mh.executeAction(input.ActionEnterVisualMode, actionEvent, ev)
 		case 'V':
-			// Enter line-wise visual mode
 			mh.editor.StartOrUpdateSelection()
 			mh.editor.SetLinewise(true)
 			mh.currentMode = ModeVisualLine
 			mh.statusBar.SetTemporaryMessage("-- VISUAL LINE --")
-			logger.Debugf("ModeHandler: Entering Visual Line Mode")
 			return true
 		case 'A':
-			// Move to end of line and insert
 			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'I':
-			// Move to start of line and insert
 			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'o':
-			// Insert line below and insert
 			mh.executeAction(input.ActionMoveEnd, input.ActionEvent{Action: input.ActionMoveEnd}, ev)
 			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
 		case 'O':
-			// Insert line above and insert
 			mh.executeAction(input.ActionMoveHome, input.ActionEvent{Action: input.ActionMoveHome}, ev)
 			mh.executeAction(input.ActionInsertNewLine, input.ActionEvent{Action: input.ActionInsertNewLine}, ev)
 			mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
 			return mh.executeAction(input.ActionEnterInsertMode, actionEvent, ev)
+
 		case 'h':
-			return mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+			for i := 0; i < count; i++ {
+				mh.executeAction(input.ActionMoveLeft, input.ActionEvent{Action: input.ActionMoveLeft}, ev)
+			}
+			return true
 		case 'j':
-			return mh.executeAction(input.ActionMoveDown, input.ActionEvent{Action: input.ActionMoveDown}, ev)
+			for i := 0; i < count; i++ {
+				mh.executeAction(input.ActionMoveDown, input.ActionEvent{Action: input.ActionMoveDown}, ev)
+			}
+			return true
 		case 'k':
-			return mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+			for i := 0; i < count; i++ {
+				mh.executeAction(input.ActionMoveUp, input.ActionEvent{Action: input.ActionMoveUp}, ev)
+			}
+			return true
 		case 'l':
-			return mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+			for i := 0; i < count; i++ {
+				mh.executeAction(input.ActionMoveRight, input.ActionEvent{Action: input.ActionMoveRight}, ev)
+			}
+			return true
+
 		case 'w':
-			mh.editor.WordForward()
+			for i := 0; i < count; i++ {
+				mh.editor.WordForward()
+			}
 			return true
 		case 'b':
-			mh.editor.WordBackward()
+			for i := 0; i < count; i++ {
+				mh.editor.WordBackward()
+			}
 			return true
 		case 'e':
-			mh.editor.WordEnd()
+			for i := 0; i < count; i++ {
+				mh.editor.WordEnd()
+			}
 			return true
+
 		case '0':
 			mh.editor.HardHome()
 			return true
+
 		case 'x':
-			// Select current character and cut it
 			mh.editor.ClearSelection()
 			mh.editor.StartOrUpdateSelection()
-			mh.editor.MoveCursor(0, 1) // Select 1 char
+			mh.editor.MoveCursor(0, 1)
 			return mh.executeAction(input.ActionCut, input.ActionEvent{Action: input.ActionCut}, ev)
+
 		case 'u':
 			return mh.executeAction(input.ActionUndo, input.ActionEvent{Action: input.ActionUndo}, ev)
 		case 'p':
@@ -422,13 +582,121 @@ func (mh *ModeHandler) handleActionNormal(actionEvent input.ActionEvent, ev *tce
 			return mh.executeAction(input.ActionEnterFindMode, input.ActionEvent{Action: input.ActionEnterFindMode}, ev)
 		case ':':
 			return mh.executeAction(input.ActionEnterCommandMode, input.ActionEvent{Action: input.ActionEnterCommandMode}, ev)
+		case 'n':
+			return mh.executeAction(input.ActionFindNext, input.ActionEvent{Action: input.ActionFindNext}, ev)
+		case 'N':
+			return mh.executeAction(input.ActionFindPrevious, input.ActionEvent{Action: input.ActionFindPrevious}, ev)
+		case 'G':
+			if count > 1 {
+				mh.editor.SetCursor(types.Position{Line: count - 1, Col: 0})
+			} else {
+				mh.editor.GoToFileEnd()
+			}
+			return true
+		case 'J':
+			// Join current line with next
+			return mh.joinLines()
 		}
 
-		mh.statusBar.SetTemporaryMessage("Unmapped key in Normal mode: %c", actionEvent.Rune)
+		mh.statusBar.SetTemporaryMessage("Unmapped key in Normal mode: %c", r)
 		return true
 	}
 
 	return false
+}
+
+// drainCount returns the accumulated count and resets it to 0.
+func (mh *ModeHandler) drainCount() int {
+	c := mh.countAccumulator
+	mh.countAccumulator = 0
+	if c == 0 {
+		c = 1
+	}
+	return c
+}
+
+// searchWordUnderCursor searches forward (*) or backward (#) for the word under the cursor.
+func (mh *ModeHandler) searchWordUnderCursor(forward bool) bool {
+	buf := mh.editor.GetBuffer()
+	if buf == nil {
+		return false
+	}
+	pos := mh.editor.GetCursor()
+	line, err := buf.Line(pos.Line)
+	if err != nil {
+		return false
+	}
+	if len(line) == 0 {
+		return false
+	}
+
+	// Extract word boundaries at cursor
+	col := pos.Col
+	if col >= len(line) {
+		col = len(line) - 1
+	}
+
+	// Find word start
+	start := col
+	for start > 0 && line[start-1] != ' ' && line[start-1] != '\t' {
+		start--
+	}
+	// Find word end
+	end := col
+	for end < len(line)-1 && line[end+1] != ' ' && line[end+1] != '\t' {
+		end++
+	}
+
+	if start >= end {
+		return false
+	}
+
+	term := string(line[start : end+1])
+	mh.lastSearchTerm = term
+	mh.lastSearchForward = forward
+	mh.editor.HighlightMatches(term)
+
+	matchPos, found := mh.editor.Find(term, pos, forward)
+	if found {
+		mh.editor.SetCursor(matchPos)
+		mh.editor.ScrollToCursor()
+		mh.statusBar.SetTemporaryMessage("/%s", term)
+	} else {
+		mh.statusBar.SetTemporaryMessage("Pattern not found: %s", term)
+	}
+	return true
+}
+
+// joinLines joins the current line with the next line (Vim 'J').
+func (mh *ModeHandler) joinLines() bool {
+	buf := mh.editor.GetBuffer()
+	if buf == nil {
+		return false
+	}
+	pos := mh.editor.GetCursor()
+	lineCount := buf.LineCount()
+	if pos.Line >= lineCount-1 {
+		return false
+	}
+
+	line, _ := buf.Line(pos.Line)
+	nextLine, _ := buf.Line(pos.Line + 1)
+
+	trimmedNext := nextLine
+	for len(trimmedNext) > 0 && (trimmedNext[0] == ' ' || trimmedNext[0] == '\t') {
+		trimmedNext = trimmedNext[1:]
+	}
+
+	_, err := buf.Delete(types.Position{Line: pos.Line, Col: len(line)}, types.Position{Line: pos.Line + 1, Col: 0})
+	if err != nil {
+		return false
+	}
+	_, err = buf.Insert(types.Position{Line: pos.Line, Col: len(line)}, []byte(" "+string(trimmedNext)))
+	if err != nil {
+		return false
+	}
+	mh.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{})
+	return true
 }
 
 // handleActionVisual handles key events specific to Visual Mode.
@@ -566,6 +834,107 @@ func (mh *ModeHandler) handleActionVisualLine(actionEvent input.ActionEvent, ev 
 	if actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward {
 		res := mh.executeAction(input.ActionCut, actionEvent, ev)
 		mh.editor.ClearSelection()
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+
+	return false
+}
+
+// handleActionVisualBlock handles key events in block-wise Visual Mode (Vim Ctrl+V).
+func (mh *ModeHandler) handleActionVisualBlock(actionEvent input.ActionEvent, ev *tcell.EventKey) bool {
+	if actionEvent.Action == input.ActionQuit {
+		mh.editor.ClearSelection()
+		mh.editor.SetBlockwise(false)
+		return mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+	}
+
+	isMovement := actionEvent.Action >= input.ActionMoveUp && actionEvent.Action <= input.ActionMoveEnd
+	if isMovement {
+		mockShiftEv := tcell.NewEventKey(ev.Key(), ev.Rune(), ev.Modifiers()|tcell.ModShift)
+		return mh.executeAction(actionEvent.Action, actionEvent, mockShiftEv)
+	}
+
+	if actionEvent.Action == input.ActionInsertRune {
+		switch actionEvent.Rune {
+		case 'h':
+			mh.editor.MoveCursor(0, -1)
+			return true
+		case 'j':
+			mh.editor.MoveCursor(1, 0)
+			return true
+		case 'k':
+			mh.editor.MoveCursor(-1, 0)
+			return true
+		case 'l':
+			mh.editor.MoveCursor(0, 1)
+			return true
+		case 'w':
+			mh.editor.WordForward()
+			return true
+		case 'b':
+			mh.editor.WordBackward()
+			return true
+		case 'e':
+			mh.editor.WordEnd()
+			return true
+		case '0':
+			mh.editor.HardHome()
+			return true
+		case 'y':
+			res := mh.executeAction(input.ActionYank, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.editor.SetBlockwise(false)
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'd', 'x':
+			res := mh.executeAction(input.ActionCut, actionEvent, ev)
+			mh.editor.ClearSelection()
+			mh.editor.SetBlockwise(false)
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'p':
+			res := mh.executeAction(input.ActionPaste, input.ActionEvent{Action: input.ActionPaste}, ev)
+			mh.editor.ClearSelection()
+			mh.editor.SetBlockwise(false)
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'P':
+			res := mh.executeAction(input.ActionPasteBefore, input.ActionEvent{Action: input.ActionPasteBefore}, ev)
+			mh.editor.ClearSelection()
+			mh.editor.SetBlockwise(false)
+			mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+			return res
+		case 'c', 's':
+			// Change block: delete block, enter insert mode at start of block
+			startLine, endLine, startCol, _ := mh.editor.GetBlockRange()
+			if startLine < 0 {
+				return false
+			}
+			for line := startLine; line <= endLine; line++ {
+				mh.editor.SetCursor(types.Position{Line: line, Col: startCol})
+				_ = mh.editor.DeleteForward()
+			}
+			mh.editor.ClearSelection()
+			mh.editor.SetBlockwise(false)
+			mh.editor.SetCursor(types.Position{Line: startLine, Col: startCol})
+			mh.currentMode = ModeInsert
+			mh.statusBar.SetTemporaryMessage("-- INSERT --")
+			return true
+		}
+	}
+
+	if actionEvent.Action == input.ActionYank {
+		res := mh.executeAction(input.ActionYank, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.editor.SetBlockwise(false)
+		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
+		return res
+	}
+	if actionEvent.Action == input.ActionCut || actionEvent.Action == input.ActionDeleteCharForward || actionEvent.Action == input.ActionDeleteCharBackward {
+		res := mh.executeAction(input.ActionCut, actionEvent, ev)
+		mh.editor.ClearSelection()
+		mh.editor.SetBlockwise(false)
 		mh.executeAction(input.ActionEnterNormalMode, actionEvent, ev)
 		return res
 	}

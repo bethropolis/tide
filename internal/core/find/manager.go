@@ -333,12 +333,13 @@ func (m *Manager) GetHighlights() []types.HighlightRegion {
 
 // --- Replace Logic ---
 
-// ParseSubstituteCommand parses the :s/pattern/replacement/[g] command string.
-func ParseSubstituteCommand(cmdStr string) (pattern, replacement string, global bool, err error) {
-	// Simple parsing, doesn't handle escaped delimiters yet
-	parts := strings.SplitN(cmdStr, "/", 4) // Use '/' as delimiter
-	if len(parts) < 3 || parts[0] != "" {   // Must start with '/'
-		err = fmt.Errorf("invalid format: use /pattern/replacement/[g]")
+// ParseSubstituteCommand parses the :s/pattern/replacement/[flags] command string.
+// Supported flags: 'g' (global on line), 'i' (case-insensitive).
+// Flags can be combined: e.g. ":s/foo/bar/gi".
+func ParseSubstituteCommand(cmdStr string) (pattern, replacement string, global, caseInsensitive bool, err error) {
+	parts := strings.SplitN(cmdStr, "/", 4)
+	if len(parts) < 3 || parts[0] != "" {
+		err = fmt.Errorf("invalid format: use /pattern/replacement/[g][i]")
 		return
 	}
 
@@ -350,22 +351,27 @@ func ParseSubstituteCommand(cmdStr string) (pattern, replacement string, global 
 		return
 	}
 
-	if len(parts) > 3 && strings.Contains(parts[3], "g") { // Check for 'g' flag
-		global = true
+	if len(parts) > 3 {
+		flags := parts[3]
+		global = strings.Contains(flags, "g")
+		caseInsensitive = strings.Contains(flags, "i")
 	}
-	// TODO: Add other flags like 'i' for case-insensitive?
 
-	return // Return parsed values and nil error
+	return
 }
 
 // Replace replaces occurrences on the current line.
-// Supports global 'g' flag. Undo support is NOT implemented for this operation yet.
-func (m *Manager) Replace(patternStr, replacement string, global bool) (int, error) {
+// Supports global 'g' flag and case-insensitive 'i' flag.
+func (m *Manager) Replace(patternStr, replacement string, global, caseInsensitive bool) (int, error) {
 	if patternStr == "" {
 		return 0, fmt.Errorf("search pattern cannot be empty")
 	}
 
-	re, err := regexp.Compile(patternStr)
+	flags := ""
+	if caseInsensitive {
+		flags = "(?i)"
+	}
+	re, err := regexp.Compile(flags + patternStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid search pattern: %w", err)
 	}
@@ -389,13 +395,6 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	replaceCount := 0
 	var finalLine bytes.Buffer // Buffer to build the new line content
 	lastIndex := 0             // Tracks end position of last match/start position
-
-	// --- TODO: Add proper Undo support ---
-	// For now, global replace isn't easily undoable as one step.
-	// We could record a single large Delete+Insert, but figuring out
-	// the intermediate EditInfo for highlighting is hard.
-	// Let's skip recording Undo for global replace in v1.0.
-	canRecordUndo := !global // Only record simple undo for non-global replace
 
 	var firstMatchStartPos types.Position // Cursor position after first replace
 
@@ -430,14 +429,11 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 
 		// Calculate start/end positions for undo/cursor
 		firstMatchStartPos = types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchStartByte)}
-		// Position after replacement (tricky if replacement has different rune count)
-		// Let's place cursor at start for now
 	}
 
 	newLineBytes := finalLine.Bytes()
 
 	// --- Apply Change to Buffer (Delete original line, Insert new line) ---
-	// Calculate start/end for deleting the whole original line
 	originalStartPos := types.Position{Line: lineIdx, Col: 0}
 	originalEndCol := utf8.RuneCount(originalLineBytes)
 	originalEndPos := types.Position{Line: lineIdx, Col: originalEndCol}
@@ -449,34 +445,52 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 	}
 
 	// 2. Insert new line content
-	editInfoIns, errIns := buf.Insert(originalStartPos, newLineBytes) // Insert at {line, 0}
+	editInfoIns, errIns := buf.Insert(originalStartPos, newLineBytes)
 	if errIns != nil {
 		return replaceCount, fmt.Errorf("replace failed during line insert: %w", errIns)
 	}
 
-	// --- Record Undo (Only for non-global for now) ---
-	if canRecordUndo && histMgr != nil {
-		loc := matches[0]
-		matchStartByte := loc[0]
-		matchEndByte := loc[1]
-		matchStartPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchStartByte)}
+	// --- Record Undo ---
+	if histMgr != nil {
+		if global {
+			// For global replace, record the entire line as a single delete+insert
+			histMgr.RecordChange(history.Change{
+				Type:          history.DeleteAction,
+				Text:          originalLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   originalEndPos,
+				CursorBefore:  cursor,
+			})
+			newEndCol := utf8.RuneCount(newLineBytes)
+			histMgr.RecordChange(history.Change{
+				Type:          history.InsertAction,
+				Text:          newLineBytes,
+				StartPosition: originalStartPos,
+				EndPosition:   types.Position{Line: lineIdx, Col: newEndCol},
+				CursorBefore:  originalStartPos,
+			})
+		} else {
+			// For single replace, record the specific match replacement
+			loc := matches[0]
+			matchStartByte := loc[0]
+			matchEndByte := loc[1]
+			matchStartPos := types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchStartByte)}
 
-		// Record Delete
-		histMgr.RecordChange(history.Change{
-			Type:          history.DeleteAction,
-			Text:          originalLineBytes[matchStartByte:matchEndByte],                                             // Original matched text
-			StartPosition: matchStartPos,                                                                              // Where the original match started
-			EndPosition:   types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchEndByte)}, // Where original match ended
-			CursorBefore:  cursor,                                                                                     // Cursor before the :s command
-		})
-		// Record Insert
-		histMgr.RecordChange(history.Change{
-			Type:          history.InsertAction,
-			Text:          []byte(replacement),
-			StartPosition: matchStartPos,                                                                               // Where insertion happens
-			EndPosition:   types.Position{Line: lineIdx, Col: matchStartPos.Col + utf8.RuneCountInString(replacement)}, // End of inserted text
-			CursorBefore:  matchStartPos,                                                                               // Cursor was at match start before this insert
-		})
+			histMgr.RecordChange(history.Change{
+				Type:          history.DeleteAction,
+				Text:          originalLineBytes[matchStartByte:matchEndByte],
+				StartPosition: matchStartPos,
+				EndPosition:   types.Position{Line: lineIdx, Col: byteOffsetToRuneIndex(originalLineBytes, matchEndByte)},
+				CursorBefore:  cursor,
+			})
+			histMgr.RecordChange(history.Change{
+				Type:          history.InsertAction,
+				Text:          []byte(replacement),
+				StartPosition: matchStartPos,
+				EndPosition:   types.Position{Line: lineIdx, Col: matchStartPos.Col + utf8.RuneCountInString(replacement)},
+				CursorBefore:  matchStartPos,
+			})
+		}
 	}
 
 	// --- Dispatch Combined Event for Highlighting ---
@@ -512,12 +526,16 @@ func (m *Manager) Replace(patternStr, replacement string, global bool) (int, err
 // ReplaceAll replaces all occurrences of pattern across every line in the buffer.
 // Each replacement is recorded individually in history; the caller is responsible
 // for wrapping the call in BeginTransaction/EndTransaction for atomic undo.
-func (m *Manager) ReplaceAll(patternStr, replacement string) (int, error) {
+func (m *Manager) ReplaceAll(patternStr, replacement string, caseInsensitive bool) (int, error) {
 	if patternStr == "" {
 		return 0, fmt.Errorf("search pattern cannot be empty")
 	}
 
-	re, err := regexp.Compile(patternStr)
+	flags := ""
+	if caseInsensitive {
+		flags = "(?i)"
+	}
+	re, err := regexp.Compile(flags + patternStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid search pattern: %w", err)
 	}
@@ -624,12 +642,16 @@ func (m *Manager) ReplaceAll(patternStr, replacement string) (int, error) {
 
 // ReplaceInRange replaces all occurrences of pattern in the given line range [startLine, endLine].
 // Each replacement is recorded individually; wrap with Begin/EndTransaction for atomic undo.
-func (m *Manager) ReplaceInRange(patternStr, replacement string, startLine, endLine int) (int, error) {
+func (m *Manager) ReplaceInRange(patternStr, replacement string, startLine, endLine int, caseInsensitive bool) (int, error) {
 	if patternStr == "" {
 		return 0, fmt.Errorf("search pattern cannot be empty")
 	}
 
-	re, err := regexp.Compile(patternStr)
+	flags := ""
+	if caseInsensitive {
+		flags = "(?i)"
+	}
+	re, err := regexp.Compile(flags + patternStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid search pattern: %w", err)
 	}

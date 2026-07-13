@@ -156,10 +156,10 @@ func (mh *ModeHandler) executeCommand() {
 	mh.cmdBuffer = ""      // Clear buffer now
 
 	// --- Handle range-prefixed substitute commands before splitting on whitespace ---
-	// :%s/pattern/replacement/[g]  → ReplaceAll across entire buffer
+	// :%s/pattern/replacement/[g][i]  → ReplaceAll across entire buffer
 	if strings.HasPrefix(cmdStr, "%s/") {
-		subStr := "/" + cmdStr[2:] // strip the leading '%', keep the /pat/rep/[g] part
-		pattern, replacement, _, err := find.ParseSubstituteCommand(subStr)
+		subStr := "/" + cmdStr[2:] // strip the leading '%', keep the /pat/rep/[g][i] part
+		pattern, replacement, _, caseInsensitive, err := find.ParseSubstituteCommand(subStr)
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Invalid substitute: %v", err)
 			return
@@ -168,7 +168,7 @@ func (mh *ModeHandler) executeCommand() {
 			mh.statusBar.SetTemporaryMessage("No editor API available")
 			return
 		}
-		count, err := mh.api.ReplaceAll(pattern, replacement)
+		count, err := mh.api.ReplaceAll(pattern, replacement, caseInsensitive)
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Replace failed: %v", err)
 			return
@@ -181,10 +181,10 @@ func (mh *ModeHandler) executeCommand() {
 		return
 	}
 
-	// :'<,'>s/pattern/replacement/[g]  → ReplaceInRange using current visual selection
+	// :'<,'>s/pattern/replacement/[g][i]  → ReplaceInRange using current visual selection
 	if strings.HasPrefix(cmdStr, "'<,'>s/") {
-		subStr := "/" + cmdStr[6:] // strip "'<,'>", keep /pat/rep/[g]
-		pattern, replacement, _, err := find.ParseSubstituteCommand(subStr)
+		subStr := "/" + cmdStr[6:] // strip "'<,'>", keep /pat/rep/[g][i]
+		pattern, replacement, _, caseInsensitive, err := find.ParseSubstituteCommand(subStr)
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Invalid substitute: %v", err)
 			return
@@ -195,7 +195,7 @@ func (mh *ModeHandler) executeCommand() {
 		}
 		// Determine range from the stored visual selection on the editor
 		startLine, endLine := mh.editor.GetVisualSelectionLines()
-		count, err := mh.api.ReplaceInRange(pattern, replacement, startLine, endLine)
+		count, err := mh.api.ReplaceInRange(pattern, replacement, startLine, endLine, caseInsensitive)
 		if err != nil {
 			mh.statusBar.SetTemporaryMessage("Replace failed: %v", err)
 			return

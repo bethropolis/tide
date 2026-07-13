@@ -2,8 +2,10 @@
 package input
 
 import (
-	"time" // For timeout timer
+	"fmt"
+	"time"
 
+	"github.com/bethropolis/tide/internal/config"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -45,7 +47,6 @@ func NewInputProcessor() *InputProcessor {
 }
 
 // loadDefaultBindings sets up the initial key mappings.
-// This is where default keybindings are defined. TODO: Load from config later.
 func (p *InputProcessor) loadDefaultBindings() {
 	// --- Simple Keys ---
 	p.keymap[tcell.KeyUp] = ActionMoveUp
@@ -56,53 +57,97 @@ func (p *InputProcessor) loadDefaultBindings() {
 	p.keymap[tcell.KeyPgDn] = ActionMovePageDown
 	p.keymap[tcell.KeyHome] = ActionMoveHome
 	p.keymap[tcell.KeyEnd] = ActionMoveEnd
-	p.keymap[tcell.KeyTab] = ActionInsertTab         // Add Tab key support
-	p.keymap[tcell.KeyBacktab] = ActionInsertBacktab // Add Shift+Tab support
-	// p.keymap[tcell.KeyEnter] = ActionInsertNewLine // Enter is handled differently by mode now
+	p.keymap[tcell.KeyTab] = ActionInsertTab
+	p.keymap[tcell.KeyBacktab] = ActionInsertBacktab
 	p.keymap[tcell.KeyBackspace] = ActionDeleteCharBackward
-	p.keymap[tcell.KeyBackspace2] = ActionDeleteCharBackward // Often used for Backspace
+	p.keymap[tcell.KeyBackspace2] = ActionDeleteCharBackward
 	p.keymap[tcell.KeyDelete] = ActionDeleteCharForward
-	p.keymap[tcell.KeyEscape] = ActionQuit // Primary quit action (checks modified)
-	p.keymap[tcell.KeyCtrlC] = ActionQuit  // Also try to quit gracefully
+	p.keymap[tcell.KeyEscape] = ActionQuit
+	p.keymap[tcell.KeyCtrlC] = ActionQuit
 
-	// --- Modifier Keys (Example: Ctrl+S for Save) ---
-	// Note: tcell ModMask combines modifiers (Ctrl | Shift etc.)
+	// --- Modifier Keys (Ctrl) ---
 	ctrlMap := make(Keymap)
 	ctrlMap[tcell.KeyCtrlS] = ActionSave
-	// Add more Ctrl bindings here, e.g., Ctrl+Q for ForceQuit?
-	ctrlMap[tcell.KeyCtrlQ] = ActionForceQuit // Example force quit
-
-	// Add Undo binding (Ctrl+Z)
+	ctrlMap[tcell.KeyCtrlQ] = ActionForceQuit
 	ctrlMap[tcell.KeyCtrlZ] = ActionUndo
-
-	// Add Redo bindings (Ctrl+Y and Ctrl+R, both common across editors)
 	ctrlMap[tcell.KeyCtrlY] = ActionRedo
 	ctrlMap[tcell.KeyCtrlR] = ActionRedo
-
-	// Add clipboard operations
-	ctrlMap[tcell.KeyCtrlX] = ActionYank  // Ctrl+X for copy (yank)
-	ctrlMap[tcell.KeyCtrlV] = ActionPaste // Ctrl+V for paste
-
+	ctrlMap[tcell.KeyCtrlX] = ActionYank
+	ctrlMap[tcell.KeyCtrlV] = ActionEnterVisualBlockMode
+	ctrlMap[tcell.KeyCtrlA] = ActionMoveHome
+	ctrlMap[tcell.KeyCtrlE] = ActionMoveEnd
 	p.modKeymap[tcell.ModCtrl] = ctrlMap
 
 	// --- Leader Key Sequences ---
-	// Map actions to keys that follow the leader key
-	p.leaderMap['/'] = ActionEnterFindMode    // <leader>/
-	p.leaderMap[':'] = ActionEnterCommandMode // <leader>:
-	p.leaderMap['f'] = ActionFuzzyFind        // <leader>f
-	p.leaderMap['n'] = ActionFindNext         // <leader>n
-	p.leaderMap['N'] = ActionFindPrevious     // <leader>N
-	p.leaderMap['w'] = ActionSave             // <leader>w (example alias for save)
-	p.leaderMap['q'] = ActionQuit             // <leader>q (example alias for quit)
-	p.leaderMap['u'] = ActionUndo             // <leader>u (alternative for undo)
-	p.leaderMap['r'] = ActionRedo             // <leader>r (alternative for redo)
-	p.leaderMap['y'] = ActionYank             // <leader>y for yank (copy)
-	p.leaderMap['p'] = ActionPaste            // <leader>p for paste
-	p.leaderMap['d'] = ActionCut              // <leader>d for cut
-	p.leaderMap['x'] = ActionCut              // <leader>x for cut
+	p.leaderMap['/'] = ActionEnterFindMode
+	p.leaderMap[':'] = ActionEnterCommandMode
+	p.leaderMap['f'] = ActionFuzzyFind
+	p.leaderMap['n'] = ActionFindNext
+	p.leaderMap['N'] = ActionFindPrevious
+	p.leaderMap['w'] = ActionSave
+	p.leaderMap['q'] = ActionQuit
+	p.leaderMap['u'] = ActionUndo
+	p.leaderMap['r'] = ActionRedo
+	p.leaderMap['y'] = ActionYank
+	p.leaderMap['p'] = ActionPaste
+	p.leaderMap['d'] = ActionCut
+	p.leaderMap['x'] = ActionCut
+}
 
-	// Note: We no longer map these directly in runeKeymap,
-	// they'll default to ActionInsertRune unless preceded by leader
+// setModeBinding parses a key string → action name pair and installs the
+// result into the correct mode layer. The mode name matches the fields of
+// config.KeybindConfig ("normal", "insert", "command", "find", "visual",
+// "visual_line").
+func (p *InputProcessor) setModeBinding(_ string, keyStr, actionName string) error {
+	ks, err := ParseKeyString(keyStr)
+	if err != nil {
+		return fmt.Errorf("invalid key %q: %w", keyStr, err)
+	}
+	action, ok := ActionFromName(actionName)
+	if !ok {
+		return fmt.Errorf("unknown action %q", actionName)
+	}
+
+	// Place into the appropriate map based on key/run/mod composition.
+	if ks.Key == tcell.KeyRune && ks.Mod == 0 {
+		p.runeKeymap[ks.Rune] = action
+		return nil
+	}
+	if ks.Mod != 0 {
+		if p.modKeymap[ks.Mod] == nil {
+			p.modKeymap[ks.Mod] = make(Keymap)
+		}
+		p.modKeymap[ks.Mod][ks.Key] = action
+		return nil
+	}
+	p.keymap[ks.Key] = action
+	return nil
+}
+
+// LoadUserBindings clears all overridable maps, re-applies defaults, then
+// applies each binding from cfg. Returns an error if any binding fails to
+// parse; partial updates are preserved for those that succeeded.
+func (p *InputProcessor) LoadUserBindings(cfg *config.KeybindConfig) error {
+	// Rebuild defaults as a clean base.
+	p.keymap = make(Keymap)
+	p.runeKeymap = make(RuneKeymap)
+	p.modKeymap = make(ModKeymap)
+	p.leaderMap = make(LeaderSequenceMap)
+	p.loadDefaultBindings()
+
+	if cfg == nil {
+		return nil
+	}
+
+	for _, mode := range []map[string]string{cfg.Normal, cfg.Insert, cfg.Command, cfg.Find, cfg.Visual, cfg.VisualLine} {
+		for keyStr, actionName := range mode {
+			if err := p.setModeBinding("", keyStr, actionName); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // ProcessEvent takes a tcell key event and returns the corresponding ActionEvent.

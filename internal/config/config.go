@@ -14,10 +14,10 @@ import (
 
 // Config holds the application's combined configuration.
 type Config struct {
-	Logger  logger.Config                     `toml:"logger"`  // Embed logger config under [logger] table
-	Editor  EditorConfig                      `toml:"editor"`  // Editor-specific settings
-	Plugins map[string]map[string]interface{} `toml:"plugins"` // Holds plugin configurations
-	// Add other sections like 'Theme', 'Keymap' later if needed
+	Logger    logger.Config                     `toml:"logger"`    // Embed logger config under [logger] table
+	Editor    EditorConfig                      `toml:"editor"`    // Editor-specific settings
+	Keybinds  KeybindConfig                     `toml:"keybindings"` // User-defined keybindings under [keybindings]
+	Plugins   map[string]map[string]interface{} `toml:"plugins"`   // Holds plugin configurations
 }
 
 // EditorConfig holds editor-specific settings.
@@ -25,8 +25,18 @@ type EditorConfig struct {
 	TabWidth        int  `toml:"tab_width"`
 	ScrollOff       int  `toml:"scroll_off"`
 	SystemClipboard bool `toml:"system_clipboard"`
-	StatusBarHeight int  `toml:"status_bar_height"` // Add StatusBarHeight
-	// AutoIndent bool `toml:"auto_indent"` // Future setting
+	StatusBarHeight int  `toml:"status_bar_height"`
+}
+
+// KeybindConfig holds user-defined keybindings per editor mode.
+// Each mode contains a map of key-combination string → action name.
+type KeybindConfig struct {
+	Normal      map[string]string `toml:"normal"`
+	Insert      map[string]string `toml:"insert"`
+	Command     map[string]string `toml:"command"`
+	Find        map[string]string `toml:"find"`
+	Visual      map[string]string `toml:"visual"`
+	VisualLine  map[string]string `toml:"visual_line"`
 }
 
 var (
@@ -49,7 +59,8 @@ func NewDefaultConfig() *Config {
 			SystemClipboard: SystemClipboard,
 			StatusBarHeight: StatusBarHeight, // Initialize with the constant value
 		},
-		Plugins: make(map[string]map[string]interface{}), // Initialize Plugins map
+		Keybinds: KeybindConfig{},                                  // No default overrides — normal defaults come from input package
+		Plugins:  make(map[string]map[string]interface{}), // Initialize Plugins map
 	}
 }
 

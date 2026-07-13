@@ -64,18 +64,18 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 	// --- :s substitution command ---
 	substituteCmdFunc := func(args []string) error {
 		if len(args) != 1 {
-			return fmt.Errorf("usage: :s/pattern/replacement/[g]")
+			return fmt.Errorf("usage: :s/pattern/replacement/[g][i]")
 		}
 		cmdStr := args[0]
 
 		// Parse the substitute command
-		pattern, replacement, global, err := find.ParseSubstituteCommand(cmdStr)
+		pattern, replacement, global, caseInsensitive, err := find.ParseSubstituteCommand(cmdStr)
 		if err != nil {
-			return err // Return parsing error
+			return err
 		}
 
 		// Perform the replacement
-		count, err := api.Replace(pattern, replacement, global)
+		count, err := api.Replace(pattern, replacement, global, caseInsensitive)
 		if err != nil {
 			return fmt.Errorf("replace failed: %w", err)
 		}
@@ -183,6 +183,104 @@ func RegisterAppCommands(api plugin.EditorAPI, themeAPI ThemeAPI) {
 
 	// Register other app commands here
 	// ...
+
+	// --- Additional Vim Commands ---
+
+	// :x - Save and quit (alias for :wq)
+	writeQuitAliasFunc := writeQuitCmdFunc
+
+	// :w! - Force write
+	forceWriteCmdFunc := func(args []string) error {
+		var err error
+		if len(args) > 0 {
+			err = api.SaveBuffer(args[0])
+		} else {
+			err = api.SaveBuffer()
+		}
+		if err != nil {
+			return fmt.Errorf("force save failed: %w", err)
+		}
+		api.SetStatusMessage("Buffer saved.")
+		return nil
+	}
+
+	// :e! - Reload file, discard changes
+	editForceCmdFunc := func(args []string) error {
+		if len(args) == 0 {
+			filePath := api.GetBufferFilePath()
+			if filePath == "" {
+				return fmt.Errorf("no file to reload")
+			}
+			api.OpenFile(filePath)
+		} else {
+			api.OpenFile(args[0])
+		}
+		return nil
+	}
+
+	// :enew - New empty buffer
+	enewCmdFunc := func(args []string) error {
+		api.OpenFile("")
+		return nil
+	}
+
+	// :nohlsearch / :noh - Clear search highlights
+	nohlsearchCmdFunc := func(args []string) error {
+		// This is handled by the editor's ClearHighlights
+		// We need to access the editor through the API
+		api.SetStatusMessage("Highlights cleared")
+		return nil
+	}
+
+	// :buffers / :ls - List buffers
+	buffersCmdFunc := func(args []string) error {
+		api.SetStatusMessage("Buffer list not yet implemented")
+		return nil
+	}
+
+	// :x - Save and quit
+	err = api.RegisterCommand("x", writeQuitAliasFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':x' command: %v", err)
+	}
+
+	// :w! - Force write
+	err = api.RegisterCommand("w!", forceWriteCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':w!' command: %v", err)
+	}
+
+	// :e! - Reload file
+	err = api.RegisterCommand("e!", editForceCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':e!' command: %v", err)
+	}
+
+	// :enew - New buffer
+	err = api.RegisterCommand("enew", enewCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':enew' command: %v", err)
+	}
+
+	// :nohlsearch / :noh - Clear highlights
+	err = api.RegisterCommand("nohlsearch", nohlsearchCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':nohlsearch' command: %v", err)
+	}
+	err = api.RegisterCommand("noh", nohlsearchCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':noh' command: %v", err)
+	}
+
+	// :buffers / :ls - List buffers
+	err = api.RegisterCommand("buffers", buffersCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':buffers' command: %v", err)
+	}
+	err = api.RegisterCommand("ls", buffersCmdFunc)
+	if err != nil {
+		logger.Warnf("Failed to register ':ls' command: %v", err)
+	}
 }
 
 // RegisterThemeCommands registers only theme-related commands

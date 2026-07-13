@@ -9,17 +9,18 @@ import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/logger"
 	"github.com/bethropolis/tide/internal/plugin"
+	"github.com/bethropolis/tide/internal/tui"
 	"github.com/bethropolis/tide/internal/types"
 	lua "github.com/yuin/gopher-lua"
 )
 
-// LuaPlugin wraps a Lua script to implement the plugin.Plugin interface.
 type LuaPlugin struct {
-	name   string
-	script string
-	api    plugin.EditorAPI
-	L      *lua.LState
-	mu     sync.Mutex
+	name          string
+	script        string
+	api           plugin.EditorAPI
+	L             *lua.LState
+	mu            sync.Mutex
+	subscriptions map[event.Type][]event.SubscriptionID
 }
 
 // NewLuaPlugin creates a new Lua plugin from a script path.
@@ -46,11 +47,10 @@ func (p *LuaPlugin) Name() string {
 func (p *LuaPlugin) Initialize(api plugin.EditorAPI) error {
 	p.api = api
 	p.L = lua.NewState()
+	p.subscriptions = make(map[event.Type][]event.SubscriptionID)
 
-	// Register the Tide API in Lua
 	p.registerAPI()
 
-	// Execute the script
 	p.mu.Lock()
 	err := p.L.DoString(p.script)
 	p.mu.Unlock()
@@ -62,10 +62,70 @@ func (p *LuaPlugin) Initialize(api plugin.EditorAPI) error {
 }
 
 func (p *LuaPlugin) Shutdown() error {
+	for eventType, ids := range p.subscriptions {
+		for _, id := range ids {
+			p.api.UnsubscribeEvent(eventType, id)
+		}
+	}
+	p.subscriptions = nil
+
 	if p.L != nil {
 		p.L.Close()
 	}
 	return nil
+}
+
+// convertEventToLua translates Go event data into a Lua table so that
+// plugins can inspect cursor positions, edit boundaries, file paths, etc.
+// Returns lua.LNil when the event carries no data payload.
+func (p *LuaPlugin) convertEventToLua(e event.Event) lua.LValue {
+	data := e.Data
+	if data == nil {
+		return lua.LNil
+	}
+
+	tbl := p.L.NewTable()
+
+	switch d := data.(type) {
+	case event.CursorMovedData:
+		p.L.SetField(tbl, "old_line", lua.LNumber(d.OldPosition.Line))
+		p.L.SetField(tbl, "old_col", lua.LNumber(d.OldPosition.Col))
+		p.L.SetField(tbl, "new_line", lua.LNumber(d.NewPosition.Line))
+		p.L.SetField(tbl, "new_col", lua.LNumber(d.NewPosition.Col))
+		return tbl
+
+	case event.BufferModifiedData:
+		editTbl := p.L.NewTable()
+		p.L.SetField(editTbl, "start_line", lua.LNumber(d.Edit.StartPosition.Row))
+		p.L.SetField(editTbl, "start_col", lua.LNumber(d.Edit.StartPosition.Column))
+		p.L.SetField(editTbl, "old_end_line", lua.LNumber(d.Edit.OldEndPosition.Row))
+		p.L.SetField(editTbl, "old_end_col", lua.LNumber(d.Edit.OldEndPosition.Column))
+		p.L.SetField(editTbl, "new_end_line", lua.LNumber(d.Edit.NewEndPosition.Row))
+		p.L.SetField(editTbl, "new_end_col", lua.LNumber(d.Edit.NewEndPosition.Column))
+		p.L.SetField(tbl, "edit", editTbl)
+		return tbl
+
+	case event.BufferSavedData:
+		p.L.SetField(tbl, "file_path", lua.LString(d.FilePath))
+		return tbl
+
+	case event.BufferLoadedData:
+		p.L.SetField(tbl, "file_path", lua.LString(d.FilePath))
+		return tbl
+
+	case event.KeyPressedData:
+		if d.KeyEvent != nil {
+			p.L.SetField(tbl, "key", lua.LString(d.KeyEvent.Name()))
+		}
+		return tbl
+
+	case event.ThemeChangedData:
+		p.L.SetField(tbl, "old_theme", lua.LString(d.OldThemeName))
+		p.L.SetField(tbl, "new_theme", lua.LString(d.NewThemeName))
+		return tbl
+	}
+
+	return lua.LNil
 }
 
 func (p *LuaPlugin) registerAPI() {
@@ -221,7 +281,55 @@ func (p *LuaPlugin) registerAPI() {
 		return 0
 	}))
 
-	// tide.subscribe(event_name, callback)
+	// tide.show_picker(title, items, on_select [, on_cancel])
+	// Each item is a Lua table with optional fields: label, description, value.
+	p.L.SetField(tideTable, "show_picker", p.L.NewFunction(func(L *lua.LState) int {
+		title := L.CheckString(1)
+		itemsTable := L.CheckTable(2)
+		onSelect := L.CheckFunction(3)
+
+		var onCancel func()
+		if L.GetTop() >= 4 {
+			cf := L.CheckFunction(4)
+			onCancel = func() {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				p.L.Push(cf)
+				if err := p.L.PCall(0, 0, nil); err != nil {
+					logger.Errorf("Lua picker on_cancel error: %v", err)
+				}
+			}
+		}
+
+		var items []tui.PickerItem
+		itemsTable.ForEach(func(_, v lua.LValue) {
+			tbl, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			items = append(items, tui.PickerItem{
+				Label:       tbl.RawGetString("label").String(),
+				Description: tbl.RawGetString("description").String(),
+				Value:       tbl.RawGetString("value").String(),
+			})
+		})
+
+		wrappedSelect := func(val string) {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			p.L.Push(onSelect)
+			p.L.Push(lua.LString(val))
+			if err := p.L.PCall(1, 0, nil); err != nil {
+				logger.Errorf("Lua picker on_select error: %v", err)
+			}
+		}
+
+		p.api.ShowPicker(title, items, wrappedSelect, onCancel)
+
+		return 0
+	}))
+
+	// tide.subscribe(event_name, callback) -> id
 	p.L.SetField(tideTable, "subscribe", p.L.NewFunction(func(L *lua.LState) int {
 		eventName := L.CheckString(1)
 		callback := L.CheckFunction(2)
@@ -236,32 +344,56 @@ func (p *LuaPlugin) registerAPI() {
 			eventType = event.TypeBufferSaved
 		case "cursor_moved":
 			eventType = event.TypeCursorMoved
+		case "theme_changed":
+			eventType = event.TypeThemeChanged
+		case "key_pressed":
+			eventType = event.TypeKeyPressed
 		case "app_ready":
 			eventType = event.TypeAppReady
 		case "app_quit":
 			eventType = event.TypeAppQuit
 		default:
-			L.Push(lua.LString(fmt.Sprintf("unknown event type: %s", eventName)))
-			return 1
+			L.ArgError(1, fmt.Sprintf("unknown event type: %s", eventName))
+			return 0
 		}
 
-		p.api.SubscribeEvent(eventType, func(e event.Event) bool {
-			// Run asynchronously to avoid deadlocks if an event is triggered
-			// from within a Lua API call (which already holds the lock).
+		id := p.api.SubscribeEvent(eventType, func(e event.Event) bool {
 			go func() {
 				p.mu.Lock()
 				defer p.mu.Unlock()
 
 				p.L.Push(callback)
+				p.L.Push(p.convertEventToLua(e))
 
-				if err := p.L.PCall(0, 0, nil); err != nil {
+				if err := p.L.PCall(1, 0, nil); err != nil {
 					logger.Errorf("Lua event '%s' callback error: %v", eventName, err)
 				}
 			}()
 			return false
 		})
 
-		L.Push(lua.LNil)
+		p.subscriptions[eventType] = append(p.subscriptions[eventType], id)
+
+		L.Push(lua.LNumber(id))
+		return 1
+	}))
+
+	// tide.unsubscribe(id) -> bool
+	p.L.SetField(tideTable, "unsubscribe", p.L.NewFunction(func(L *lua.LState) int {
+		id := event.SubscriptionID(L.CheckNumber(1))
+
+		for eventType, ids := range p.subscriptions {
+			for i, subID := range ids {
+				if subID == id {
+					p.api.UnsubscribeEvent(eventType, id)
+					p.subscriptions[eventType] = append(ids[:i], ids[i+1:]...)
+					L.Push(lua.LTrue)
+					return 1
+				}
+			}
+		}
+
+		L.Push(lua.LFalse)
 		return 1
 	}))
 

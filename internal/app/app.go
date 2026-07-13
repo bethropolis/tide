@@ -21,6 +21,7 @@ import (
 	"github.com/bethropolis/tide/internal/statusbar"
 	"github.com/bethropolis/tide/internal/theme"
 	"github.com/bethropolis/tide/internal/tui"
+	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -38,6 +39,8 @@ type App struct {
 	activeTheme        *theme.Theme
 	themeManager       *theme.Manager
 	fuzzyFinder        *tui.FuzzyFinder // Overlay
+	picker             *tui.Picker     // Generic plugin-reusable overlay
+	completion         *tui.CompletionOverlay // Identifier completion suggestion popup
 
 	// Channels managed by the App
 	quit          chan struct{}
@@ -74,11 +77,44 @@ func NewApp(filePath string) (*App, error) {
 	}
 
 	appInstance.fuzzyFinder = tui.NewFuzzyFinder(func(selectedPath string) {
-		// Callback when a file is selected
 		logger.Infof("FuzzyFinder selected: %s", selectedPath)
-		// Open the file in a new buffer (or switch to it)
 		appInstance.OpenFile(selectedPath)
 	})
+
+	appInstance.picker = tui.NewPicker("", nil, nil)
+
+	appInstance.completion = &tui.CompletionOverlay{
+		OnAccept: func(item tui.CompletionItem) {
+			ed := appInstance.getActiveEditor()
+			if ed == nil {
+				return
+			}
+			buf := ed.GetBuffer()
+			cursor := ed.GetCursor()
+
+			prefixStart := cursor.Col - item.ReplaceLen
+			if prefixStart < 0 {
+				prefixStart = 0
+			}
+
+			start := types.Position{Line: cursor.Line, Col: prefixStart}
+			end := types.Position{Line: cursor.Line, Col: cursor.Col}
+
+			if _, err := buf.Delete(start, end); err != nil {
+				return
+			}
+			editInfo, err := buf.Insert(start, []byte(item.InsertText))
+			if err != nil {
+				return
+			}
+
+			cursor.Col = prefixStart + len([]rune(item.InsertText))
+			ed.SetCursor(cursor)
+
+			appInstance.eventManager.Dispatch(event.TypeBufferModified, event.BufferModifiedData{Edit: editInfo})
+			appInstance.requestRedraw()
+		},
+	}
 
 	appInstance.activeTheme = appInstance.themeManager.Current()
 
@@ -90,12 +126,18 @@ func NewApp(filePath string) (*App, error) {
 	appInstance.activeEditorIndex = 0
 
 	inputProcessor := input.NewInputProcessor()
+	if err := inputProcessor.LoadUserBindings(&config.Get().Keybinds); err != nil {
+		logger.Warnf("Failed to load user keybindings from config: %v", err)
+	}
 	modeHandlerCfg := modehandler.Config{
 		Editor:         editor,
 		InputProcessor: inputProcessor,
 		EventManager:   appInstance.eventManager,
 		StatusBar:      appInstance.statusBar,
 		QuitSignal:     appInstance.quit,
+		OnInsertEdit: func() {
+			appInstance.rebuildCompletions()
+		},
 	}
 	modeHandler := modehandler.New(modeHandlerCfg)
 	appInstance.modeHandler = modeHandler
@@ -269,6 +311,23 @@ func (a *App) eventLoop() {
 		case *tcell.EventKey:
 			if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
 				needsRedraw = a.fuzzyFinder.HandleKeyEvent(eventData)
+			} else if a.picker != nil && a.picker.IsActive() {
+				needsRedraw = a.picker.HandleKeyEvent(eventData)
+			} else if a.completion != nil && a.completion.IsActive() {
+				// Completion overlay: Tab/Enter accept, Up/Down
+				// navigate, Esc cancels; everything else passes through
+				// to the editor so the user can keep typing.
+				switch eventData.Key() {
+				case tcell.KeyEscape, tcell.KeyCtrlC:
+					a.completion.Cancel()
+					needsRedraw = true
+				case tcell.KeyEnter, tcell.KeyTab:
+					needsRedraw = a.completion.HandleKeyEvent(eventData)
+				case tcell.KeyUp, tcell.KeyDown, tcell.KeyCtrlK, tcell.KeyCtrlJ:
+					needsRedraw = a.completion.HandleKeyEvent(eventData)
+				default:
+					needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
+				}
 			} else {
 				needsRedraw = a.modeHandler.HandleKeyEvent(eventData)
 			}
@@ -368,6 +427,90 @@ func (a *App) SetStatusMessage(format string, args ...interface{}) {
 	a.requestRedraw()
 }
 
+// rebuildCompletions is called after each insert-mode edit.  It queries the
+// current buffer's Tree-sitter tree for local identifier symbols and
+// updates the floating completion overlay if the cursor sits at the end of
+// a word prefix.
+func (a *App) rebuildCompletions() {
+	if a.completion == nil {
+		return
+	}
+	ed := a.getActiveEditor()
+	if ed == nil {
+		return
+	}
+	if a.modeHandler.GetCurrentMode() != modehandler.ModeInsert {
+		a.completion.Cancel()
+		return
+	}
+
+	cursor := ed.GetCursor()
+	prefix, err := a.wordPrefix(ed, cursor)
+	if err != nil || len(prefix) < 2 {
+		a.completion.Cancel()
+		return
+	}
+
+	hm := ed.GetHighlightManager()
+	if hm == nil {
+		return
+	}
+	symbols := hm.GetLocalSymbols()
+	if len(symbols) == 0 {
+		a.completion.Cancel()
+		return
+	}
+
+	items := tui.FilterSymbols(prefix, symbols, len(prefix))
+	if len(items) == 0 {
+		a.completion.Cancel()
+		return
+	}
+
+	if a.completion.IsActive() {
+		a.completion.Update(prefix, cursor.Line, cursor.Col, items)
+	} else {
+		a.completion.Activate(prefix, cursor.Line, cursor.Col, items)
+	}
+	a.requestRedraw()
+}
+
+// wordPrefix returns the identifier-like text immediately before the cursor
+// on the same line.  Returns an empty string if the cursor is at the start
+// of a line or preceded by non-identifier characters.
+func (a *App) wordPrefix(ed *core.Editor, cursor types.Position) (string, error) {
+	line, err := ed.GetBuffer().Line(cursor.Line)
+	if err != nil {
+		return "", err
+	}
+	if cursor.Col <= 0 || cursor.Col > len(line) {
+		return "", nil
+	}
+
+	// Walk backward from cursor to find the start of the word
+	runeLine := []rune(string(line))
+	start := cursor.Col
+	if start > len(runeLine) {
+		start = len(runeLine)
+	}
+	if start <= 0 {
+		return "", nil
+	}
+
+	i := start - 1
+	for i >= 0 {
+		r := runeLine[i]
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			break
+		}
+		i--
+	}
+	if i >= start-1 {
+		return "", nil
+	}
+	return string(runeLine[i+1 : start]), nil
+}
+
 // requestRedraw sends a redraw signal non-blockingly.
 func (a *App) requestRedraw() {
 	select {
@@ -454,6 +597,13 @@ func (a *App) drawEditor() {
 	if a.fuzzyFinder != nil && a.fuzzyFinder.IsActive() {
 		showCursor = false
 		a.fuzzyFinder.Draw(screen, a.activeTheme, w, h)
+	}
+	if a.picker != nil && a.picker.IsActive() {
+		showCursor = false
+		a.picker.Draw(screen, a.activeTheme, w, h)
+	}
+	if a.completion != nil && a.completion.IsActive() {
+		a.completion.Draw(screen, a.activeTheme, w, h)
 	}
 
 	if showCursor {
