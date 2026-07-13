@@ -29,20 +29,29 @@ Tide is a modern, extensible terminal-based text editor written purely in Go. It
     *   Includes a comfortable built-in default dark theme ("Dark comfort").
 *   **Multi-Language Support:** Built-in support for Go, Python, JavaScript, JSON, and Rust. Easily extensible for more languages.
 *   **Core Editing:**
-    *   Modal editing (Normal, Command, Find modes).
-    *   Text insertion, deletion, line handling.
-    *   Undo/Redo stack.
+    *   Modal editing (Normal, Insert, Visual, Visual Line, Visual Block, Command, Find modes).
+    *   Count prefixes (`3j`, `5dd`, `10l`).
+    *   Dot repeat (`.` replays last insert changes).
+    *   Text insertion, deletion, word deletion (`dw`, `db`), line joining (`J`).
+    *   Undo/Redo stack with atomic transaction support.
     *   Yank (Copy) / Paste (Internal register or optional System Clipboard).
-    *   Find (`/`, `n`, `N`) with match highlighting.
-    *   Replace (`:s/pattern/replacement/[g]` on current line).
+    *   Find (`/`, `n`, `N`, `*`, `#`) with match highlighting.
+    *   Replace (`:s/pattern/replacement/[gi]`, `:%s/...`, `:'<,'>s/...`) with case-insensitive flag.
+    *   File navigation (`gg`, `G`).
+    *   Visual modes: character-wise (`v`), line-wise (`V`), block-wise (`Ctrl+V`).
     *   Auto Indentation.
     *   Line numbering.
     *   Configurable tab width rendering.
 *   **Configuration:**
     *   Load settings (editor, logger) from `~/.config/tide/config.toml`.
+    *   Dynamic TOML keybindings under `[keybindings]`.
     *   Command-line flag overrides for key settings.
     *   Advanced, filterable logging system (`slog` based).
-*   **Modular & Extensible:** Clean architecture with a basic plugin system (example: Word Count).
+*   **Plugin System:**
+    *   Go plugins (e.g., Word Count, Auto Save, File Picker).
+    *   Lua scripting with full API (`tide.*` functions, event subscriptions).
+    *   Reusable UI Picker overlay.
+    *   Tree-sitter local-symbol autocomplete in insert mode.
 
 ---
 
@@ -52,19 +61,31 @@ Tide is a modern, extensible terminal-based text editor written purely in Go. It
 
 Ensure you have **Go 1.21+** installed.
 
-```bash
-# Install latest release
-go install github.com/bethropolis/tide/cmd/tide@latest
+**Option 1: Install with `just` (recommended)**
 
-# Or, build from source:
-# git clone https://github.com/bethropolis/tide.git
-# cd tide
-# go build ./cmd/tide/
-# ./tide --help # See available flags
+```bash
+git clone https://github.com/bethropolis/tide.git
+cd tide
+just install          # builds and installs to ~/.local/bin
 ```
 
-> Make sure `$GOPATH/bin` (usually `~/go/bin`) is in your system's `$PATH`.
- 
+**Option 2: `go install`**
+
+```bash
+go install github.com/bethropolis/tide/cmd/tide@latest
+```
+
+**Option 3: Build from source**
+
+```bash
+git clone https://github.com/bethropolis/tide.git
+cd tide
+just build            # or: go build -o ./bin/tide ./cmd/tide
+./bin/tide --help
+```
+
+> Make sure `$GOPATH/bin` (usually `~/go/bin`) or `~/.local/bin` is in your system's `$PATH`.
+
 ### Basic Usage
 
 ```bash
@@ -107,6 +128,17 @@ Tide uses TOML files located in `~/.config/tide/`.
   scroll_off = 3
   system_clipboard = false # Set true to use system clipboard
   # status_bar_height = 1 # Currently fixed at 1
+
+  # Keybindings (optional)
+  # Each section defines mode-specific key overrides.
+  # Keys: "ctrl+s", "alt+x", "escape", "enter", etc.
+  # Actions: see available action names below.
+  [keybindings.normal]
+  "ctrl+s" = "save"
+  "ctrl+q" = "quit"
+
+  [keybindings.insert]
+  "escape" = "enter_normal"
   ```
 </details>
 
@@ -177,25 +209,45 @@ Tide uses TOML files located in `~/.config/tide/`.
   | `PageDown`            | Page Down                | Move viewport and cursor down one page       |
   | `Home`                | Home                     | Move cursor to beginning of line             |
   | `End`                 | End                      | Move cursor to end of line                   |
-  | `TAB`                 | Insert Tab               | Insert a tab character                       |
-  | `Backspace`           | Delete Backward          | Delete character before cursor               |
-  | `Delete`              | Delete Forward           | Delete character under/after cursor          |
+  | `gg`                  | Go to File Start         | Move cursor to first line                    |
+  | `G`                   | Go to File End           | Move cursor to last line                     |
+  | `w`                   | Word Forward             | Move to start of next word                   |
+  | `b`                   | Word Backward            | Move to start of current/previous word       |
+  | `e`                   | Word End                 | Move to end of current/next word             |
+  | `0`                   | Hard Home                | Move to column 0                             |
+  | `i`                   | Insert Mode              | Enter insert mode at cursor                  |
+  | `a`                   | Append Mode              | Enter insert mode after cursor               |
+  | `A`                   | Append End               | Enter insert mode at end of line             |
+  | `I`                   | Insert Start             | Enter insert mode at first non-blank         |
+  | `o`                   | Open Below               | Insert line below, enter insert mode         |
+  | `O`                   | Open Above               | Insert line above, enter insert mode         |
+  | `v`                   | Visual Mode              | Enter character-wise visual mode             |
+  | `V`                   | Visual Line Mode         | Enter line-wise visual mode                  |
+  | `Ctrl+V`              | Visual Block Mode        | Enter block-wise visual mode                 |
+  | `x`                   | Delete Char              | Delete character under cursor                |
+  | `dw`                  | Delete Word              | Delete word forward                          |
+  | `db`                  | Delete Word Back         | Delete word backward                         |
+  | `dd`                  | Delete Line              | Delete current line (linewise)               |
+  | `J`                   | Join Lines               | Join current line with next                  |
+  | `y`                   | Yank (pending)           | Start yank operator (yy = yank line)         |
+  | `p`                   | Paste After              | Paste after cursor                           |
+  | `P`                   | Paste Before             | Paste before cursor                          |
+  | `u`                   | Undo                     | Undo last change                             |
+  | `Ctrl+R`              | Redo                     | Redo last undone change                      |
+  | `*`                   | Search Word Forward      | Search for word under cursor                 |
+  | `#`                   | Search Word Backward     | Search backward for word under cursor        |
+  | `n`                   | Find Next                | Find next search match                       |
+  | `N`                   | Find Previous            | Find previous search match                   |
+  | `/`                   | Find Mode                | Start searching                              |
+  | `:`                   | Command Mode             | Start entering a command                     |
+  | `.`                   | Dot Repeat               | Replay last insert-mode changes              |
   | `ESC`, `Ctrl+C`       | Quit / Clear Highlights  | Quit if unmodified, else prompt/clear search |
   | `Ctrl+Q`              | Force Quit               | Quit unconditionally                         |
   | `Ctrl+S`              | Save                     | Save the current buffer                      |
-  | `Ctrl+Z`              | Undo                     | Undo the last change                         |
-  | `Ctrl+R`, `<leader>r` | Redo                     | Redo the last undone change                  |
-  | `Ctrl+X`, `<leader>x` | Yank (Copy)              | Copy selection to clipboard                  |
-  | `Ctrl+V`, `<leader>p` | Paste                    | Paste from clipboard                         |
-  | `<leader>/`           | Enter Find Mode          | Start searching                              |
-  | `<leader>:`           | Enter Command Mode       | Start entering a command                     |
-  | `<leader>n`           | Find Next                | Find next search match                       |
-  | `<leader>N`           | Find Previous            | Find previous search match                   |
-  | `<leader>w`           | Save                     | Alias for save                               |
-  | `<leader>q`           | Quit                     | Alias for quit                               |
 
+  **Count Prefixes:** Numbers before movements/operators repeat them (e.g., `3j` moves down 5 lines, `5dd` deletes 5 lines).
 
-  *(Note: `<leader>` defaults to `,`. Timeout is 500ms)*
+  **Pending Operators:** `d` and `y` wait for a motion or text object (`dw`, `db`, `dd`, `yy`).
 </details>
 
 ---
@@ -206,25 +258,89 @@ Tide uses TOML files located in `~/.config/tide/`.
   <summary>Show Commands</summary>
 
   *   `:q` - Quit if buffer is unmodified. Shows warning if modified.
-  *   `:wq` - Write buffer then quit. Fails if write fails.
   *   `:q!` - Force quit, discarding any unsaved changes.
-  *   `:theme <theme_name>` - Switch to the specified theme (case-insensitive). Theme must exist in the themes directory or be built-in. Overwrites `~/.config/tide/theme.toml`.
-  *   `:themes` - List available theme names in the status bar.
-  *   `:s/pattern/replacement/[g]` - Replace first (`g` omitted) or all (`g` included) occurrences of `pattern` with `replacement` on the *current line*.
-  *   `:w [filename]` - Write buffer to current file or `[filename]`.
-  *   `:wc` - (From WordCount plugin) Display line, word, and byte count.
+  *   `:w` - Write buffer to current file.
+  *   `:w [filename]` - Write buffer to `[filename]`.
+  *   `:w!` - Force write.
+  *   `:wq` - Write buffer then quit.
+  *   `:x` - Write buffer then quit (alias for `:wq`).
+  *   `:e [filename]` - Open `[filename]` in a new buffer.
+  *   `:e!` - Reload current file, discarding changes.
+  *   `:enew` - Open a new empty buffer.
+  *   `:bn` / `:bnext` - Next buffer.
+  *   `:bp` / `:bprev` - Previous buffer.
+  *   `:bd` / `:bdelete` - Close current buffer.
+  *   `:bd!` - Force close current buffer.
+  *   `:buffers` / `:ls` - List open buffers.
+  *   `:s/pattern/replacement/[g][i]` - Replace on current line. `g` = all matches, `i` = case-insensitive.
+  *   `:%s/pattern/replacement/[g][i]` - Replace across entire buffer.
+  *   `:'<,'>s/pattern/replacement/[g][i]` - Replace within visual selection.
+  *   `:noh` / `:nohlsearch` - Clear search highlights.
+  *   `:theme <name>` - Switch to the specified theme.
+  *   `:themes` - List available theme names.
+  *   `:pick` - Open file picker overlay.
+  *   `:files [dir]` - List files in directory.
+  *   `:wc` - (WordCount plugin) Display line, word, and byte count.
 </details>
+
+---
+
+## Lua Plugin API
+
+Tide includes a Lua scripting engine. Place `.lua` files in `plugins/lua/` or `~/.config/tide/plugins/lua/`.
+
+```lua
+-- Example: register a command
+tide.register_command("hello", function(args)
+    tide.set_status_message("Hello from Lua!")
+end)
+
+-- Example: subscribe to events
+tide.subscribe("cursor_moved", function(event)
+    tide.set_status_message("Cursor: L" .. event.new_line .. " C" .. event.new_col)
+end)
+
+-- Example: show a file picker
+tide.show_picker("Files", {
+    { label = "file1.go", value = "file1.go" },
+    { label = "file2.go", value = "file2.go" },
+}, function(selected)
+    tide.open_file(selected)
+end)
+```
+
+**Available Lua APIs:**
+`tide.set_status_message`, `tide.register_command`, `tide.get_cursor`, `tide.set_cursor`, `tide.get_buffer_lines`, `tide.insert_text`, `tide.delete_range`, `tide.get_buffer_file_path`, `tide.open_file`, `tide.next_buffer`, `tide.prev_buffer`, `tide.close_buffer`, `tide.show_picker`, `tide.subscribe`, `tide.unsubscribe`
+
+---
+
+## Development
+
+Tide uses [just](https://just.systems/) as a command runner.
+
+```bash
+just build          # Build ./bin/tide
+just install        # Build + install to ~/.local/bin
+just test           # Run all tests
+just vet            # Run go vet
+just check          # build + vet + test
+just fmt            # Format source
+just clean          # Remove build artifacts
+just run file.go    # Build and run with args
+just coverage       # Generate HTML coverage report
+just --list         # Show all recipes
+```
 
 ---
 
 ## Known Limitations / Future Plans
 
-*   **Terminal Mouse Selection:** Native terminal selection includes line numbers. Use internal Yank/Paste (`Ctrl+X`/`Ctrl+V`) for code. Full mouse support is planned.
-*   **Undo for Global Replace/Complex Ops:** Undo works for single changes but not yet reliably for global replaces or potentially some plugin actions.
-*   **Limited Replace Scope:** `:s` only operates on the current line. Range support (`:%s`, `:'<,'>s`) is planned.
-*   **Basic Modes:** Primarily Normal mode exists. no Insert/Visual modes are planned.
 *   **Performance:** Untested on very large files (> 100MB).
-*   **Configuration:** Limited configuration options currently. More planned (keybindings, etc.).
+*   **Visual Block Operations:** Block insert/change not yet implemented (only delete/yank/paste).
+*   **Text Objects:** `iw`, `aw`, `ip`, `ap` not yet supported.
+*   **Registers:** Only unnamed register; named registers (`"a`-`"z`) not yet supported.
+*   **Macros:** Recording (`qa`) and playback (`@a`) not yet supported.
+*   **Splits:** Window splits (`:sp`, `:vsp`) not yet supported.
 *   **Status Bar Styling:** Segments like `[Modified]` aren't individually styled yet.
 
 ---
