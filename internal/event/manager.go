@@ -1,71 +1,85 @@
-// internal/event/manager.go
 package event
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/bethropolis/tide/internal/logger"
 )
 
-// Handler defines the function signature for event subscribers.
-// It returns true if the event was consumed (prevents further processing if needed).
-// For now, we won't use the return value, but it's good practice for future flexibility.
 type Handler func(e Event) bool
 
-// Manager handles event subscriptions and dispatching.
-type Manager struct {
-	mu       sync.RWMutex
-	handlers map[Type][]Handler // Map event types to a list of handlers
+type SubscriptionID uint64
+
+type subscriptionEntry struct {
+	id      SubscriptionID
+	handler Handler
 }
 
-// NewManager creates a new event manager.
+type Manager struct {
+	mu         sync.RWMutex
+	nextID     uint64
+	handlers   map[Type][]subscriptionEntry
+}
+
 func NewManager() *Manager {
 	return &Manager{
-		handlers: make(map[Type][]Handler),
+		handlers: make(map[Type][]subscriptionEntry),
 	}
 }
 
-// Subscribe adds a handler function for a specific event type.
-func (m *Manager) Subscribe(eventType Type, handler Handler) {
+func (m *Manager) Subscribe(eventType Type, handler Handler) SubscriptionID {
+	id := SubscriptionID(atomic.AddUint64(&m.nextID, 1))
+
+	m.mu.Lock()
+	m.handlers[eventType] = append(m.handlers[eventType], subscriptionEntry{id: id, handler: handler})
+	m.mu.Unlock()
+
+	logger.DebugTagf("event", "Event Manager: Handler subscribed to type %v (id=%d)", eventType, id)
+	return id
+}
+
+func (m *Manager) Unsubscribe(eventType Type, id SubscriptionID) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.handlers[eventType] = append(m.handlers[eventType], handler)
-	logger.DebugTagf("event", "Event Manager: Handler subscribed to type %v", eventType) // Debug log
+	entries, exists := m.handlers[eventType]
+	if !exists {
+		return
+	}
+
+	for i, entry := range entries {
+		if entry.id == id {
+			m.handlers[eventType] = append(entries[:i], entries[i+1:]...)
+			logger.DebugTagf("event", "Event Manager: Handler unsubscribed from type %v (id=%d)", eventType, id)
+			return
+		}
+	}
 }
 
-// Unsubscribe (Optional): Removes a specific handler. Requires comparing function pointers, which can be tricky.
-// A simpler approach might be to have Subscribe return an ID that can be used to Unsubscribe.
-// Skipping implementation for now for brevity.
-
-// Dispatch sends an event to all registered handlers for its type.
-// Runs handlers synchronously for simplicity. Could be made asynchronous.
 func (m *Manager) Dispatch(eventType Type, data interface{}) {
 	event := Event{
 		Type: eventType,
 		Data: data,
 	}
 
-	m.mu.RLock() // Use read lock while iterating handlers
-	handlers, exists := m.handlers[eventType]
-	m.mu.RUnlock() // Unlock after getting the slice
+	m.mu.RLock()
+	entries, exists := m.handlers[eventType]
+	m.mu.RUnlock()
 
-	if !exists || len(handlers) == 0 {
-		logger.DebugTagf("event", "Event Manager: No handlers for type %v", eventType) // Can be noisy
+	if !exists || len(entries) == 0 {
+		logger.DebugTagf("event", "Event Manager: No handlers for type %v", eventType)
 		return
 	}
 
-	logger.DebugTagf("event", "Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(handlers)) // Debug log
+	logger.DebugTagf("event", "Event Manager: Dispatching event type %v to %d handler(s)", eventType, len(entries))
 
-	// Call handlers. Be careful if handlers can modify the list concurrently (they shouldn't).
-	// Creating a copy prevents issues if a handler tries to unsubscribe itself during dispatch.
-	handlersCopy := make([]Handler, len(handlers))
-	copy(handlersCopy, handlers)
+	handlersCopy := make([]Handler, len(entries))
+	for i, entry := range entries {
+		handlersCopy[i] = entry.handler
+	}
 
 	for _, handler := range handlersCopy {
-		// We could use the return value later if needed:
-		// consumed := handler(event)
-		// if consumed { break } // Stop propagation if consumed
-		handler(event) // Simple synchronous dispatch
+		handler(event)
 	}
 }

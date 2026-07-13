@@ -4,6 +4,7 @@ package plugin
 import (
 	"github.com/bethropolis/tide/internal/event"
 	"github.com/bethropolis/tide/internal/theme"
+	"github.com/bethropolis/tide/internal/tui"
 	"github.com/bethropolis/tide/internal/types"
 	"github.com/gdamore/tcell/v2"
 )
@@ -28,11 +29,10 @@ type EditorAPI interface {
 	// Use with caution! Ensure plugins don't corrupt state.
 	InsertText(pos types.Position, text []byte) error
 	DeleteRange(start, end types.Position) error
-	// ReplaceRange(start, end types.Position, text []byte) error // Combine delete/insert
-	SaveBuffer(filePath ...string) error                                             // Save buffer to file with optional path
-	Replace(pattern, replacement string, global bool) (int, error)                   // Replace on current line
-	ReplaceAll(pattern, replacement string) (int, error)                             // :%s – replace across entire buffer
-	ReplaceInRange(pattern, replacement string, startLine, endLine int) (int, error) // :'<,'>s – replace within line range
+	SaveBuffer(filePath ...string) error                                                                  // Save buffer to file with optional path
+	Replace(pattern, replacement string, global, caseInsensitive bool) (int, error)                       // Replace on current line
+	ReplaceAll(pattern, replacement string, caseInsensitive bool) (int, error)                            // :%s – replace across entire buffer
+	ReplaceInRange(pattern, replacement string, startLine, endLine int, caseInsensitive bool) (int, error) // :'<,'>s – replace within line range
 
 	// --- Cursor & Viewport ---
 	GetCursor() types.Position
@@ -42,13 +42,17 @@ type EditorAPI interface {
 
 	// --- Event Bus Interaction ---
 	DispatchEvent(eventType event.Type, data interface{})
-	SubscribeEvent(eventType event.Type, handler event.Handler) // Plugins can listen too
+	SubscribeEvent(eventType event.Type, handler event.Handler) event.SubscriptionID
+	UnsubscribeEvent(eventType event.Type, id event.SubscriptionID)
 
 	// --- Command Registration ---
 	RegisterCommand(name string, cmdFunc CommandFunc) error // Allow plugins to expose commands
 
 	// --- Status Bar ---
 	SetStatusMessage(format string, args ...interface{}) // Show temporary messages
+
+	// --- Picker / Overlay ---
+	ShowPicker(title string, items []tui.PickerItem, onSelect func(val string), onCancel func()) // Launch a selection overlay
 
 	// --- Theme Access ---
 	GetThemeStyle(styleName string) tcell.Style // Get a style from the active theme

@@ -289,3 +289,60 @@ func (m *Manager) HighlightSearchMatches(term string) {
 }
 func (m *Manager) HasHighlights() bool                    { return false } // Syntax manager doesn't own search highlights
 func (m *Manager) GetHighlights() []types.HighlightRegion { return nil }
+
+// GetLocalSymbols walks the current syntax tree and returns the unique set
+// of identifier-like text within the buffer.  It is intended for lightweight,
+// offline completions: there is no LSP round-trip, no async work, and the
+// traversal is bounded by what the highlighter already parsed.
+func (m *Manager) GetLocalSymbols() []string {
+	m.mutex.RLock()
+	tree := m.syntaxTree
+	m.mutex.RUnlock()
+
+	if tree == nil {
+		return nil
+	}
+
+	root := tree.RootNode()
+	if root == nil {
+		return nil
+	}
+
+	const minSymbolLen = 2
+	symbols := make(map[string]struct{})
+
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n == nil {
+			return
+		}
+		// Capture identifiers and field identifiers (common across Go/JS/Py/Rust).
+		switch n.Type() {
+		case "identifier", "field_identifier", "property_identifier", "type_identifier":
+			startRow := int(n.StartPoint().Row)
+			startCol := int(n.StartPoint().Column)
+			endRow := int(n.EndPoint().Row)
+			endCol := int(n.EndPoint().Column)
+
+			text := m.editor.GetBuffer().GetText(
+				types.Position{Line: startRow, Col: startCol},
+				types.Position{Line: endRow, Col: endCol},
+			)
+			if len([]rune(text)) >= minSymbolLen {
+				symbols[text] = struct{}{}
+			}
+		}
+		count := int(n.ChildCount())
+		for i := 0; i < count; i++ {
+			walk(n.Child(i))
+		}
+	}
+
+	walk(root)
+
+	out := make([]string, 0, len(symbols))
+	for s := range symbols {
+		out = append(out, s)
+	}
+	return out
+}

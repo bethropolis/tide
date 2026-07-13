@@ -25,7 +25,8 @@ const (
 	ModeCommand
 	ModeFind
 	ModeVisual
-	ModeVisualLine // Line-wise visual mode (Vim 'V')
+	ModeVisualLine  // Line-wise visual mode (Vim 'V')
+	ModeVisualBlock // Block-wise visual mode (Vim Ctrl+V)
 )
 
 // ModeHandler manages input modes, command execution, and related state.
@@ -62,9 +63,19 @@ type ModeHandler struct {
 	// Multi-key operator state
 	pendingOperator rune
 
+	// Count prefix state (e.g., 3j, 5dd)
+	countAccumulator int
+
+	// Dot-repeat state
+	lastInsertActions []input.ActionEvent // recorded insert-mode actions for . repeat
+	recordingInsert  bool                // true while in insert mode, recording actions
+
 	// Mouse drag state
 	mouseDragging  bool
 	mouseDragStart types.Position
+
+	// Insert-mode edit callback (for completion overlay)
+	onInsertEdit func()
 
 	// Editor API (for range substitution commands)
 	api plugin.EditorAPI
@@ -77,6 +88,9 @@ type Config struct {
 	EventManager   *event.Manager
 	StatusBar      *statusbar.StatusBar
 	QuitSignal     chan<- struct{}
+	// OnInsertEdit is called after every insert-mode edit so the app can
+	// rebuild the completion overlay.
+	OnInsertEdit func()
 }
 
 // New creates a new ModeHandler.
@@ -105,7 +119,8 @@ func New(cfg Config) *ModeHandler {
 		commands:          make(map[string]plugin.CommandFunc),
 		cmdBuffer:         "",
 		cmdSuggestionIdx:  -1,
-		lastSearchForward: true, // Default search direction
+		lastSearchForward: true,
+		onInsertEdit:      cfg.OnInsertEdit,
 	}
 	mh.leaderKey = cfg.InputProcessor.GetLeaderKey() // Cache leader key
 	return mh
@@ -271,6 +286,8 @@ func (mh *ModeHandler) HandleKeyEvent(ev *tcell.EventKey) bool {
 		actionProcessed = mh.handleActionVisual(actionEvent, ev)
 	case ModeVisualLine:
 		actionProcessed = mh.handleActionVisualLine(actionEvent, ev)
+	case ModeVisualBlock:
+		actionProcessed = mh.handleActionVisualBlock(actionEvent, ev)
 	case ModeCommand:
 		actionProcessed = mh.handleActionCommand(actionEvent)
 	case ModeFind:
@@ -313,6 +330,8 @@ func (mh *ModeHandler) GetCurrentModeString() string {
 		return "VISUAL"
 	case ModeVisualLine:
 		return "VISUAL LINE"
+	case ModeVisualBlock:
+		return "VISUAL BLOCK"
 	case ModeCommand:
 		return "COMMAND"
 	case ModeFind:

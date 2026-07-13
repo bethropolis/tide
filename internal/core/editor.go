@@ -188,6 +188,30 @@ func (e *Editor) SetLinewise(lw bool) {
 	e.selectionManager.SetLinewise(lw)
 }
 
+// IsBlockwise returns whether the selection is block-wise (Vim Ctrl+V mode).
+func (e *Editor) IsBlockwise() bool {
+	if e.selectionManager == nil {
+		return false
+	}
+	return e.selectionManager.IsBlockwise()
+}
+
+// SetBlockwise marks the current selection as block-wise (Vim Ctrl+V behaviour).
+func (e *Editor) SetBlockwise(bw bool) {
+	if e.selectionManager == nil {
+		return
+	}
+	e.selectionManager.SetBlockwise(bw)
+}
+
+// GetBlockRange returns the normalized block selection as a rectangle.
+func (e *Editor) GetBlockRange() (startLine, endLine, startCol, endCol int) {
+	if e.selectionManager == nil {
+		return -1, -1, -1, -1
+	}
+	return e.selectionManager.GetBlockRange()
+}
+
 // --- Cursor Methods ---
 
 // SetCursor sets the cursor position

@@ -41,3 +41,4 @@ theme.toml
 *.txt
 config.toml
 progress.md
+bin/

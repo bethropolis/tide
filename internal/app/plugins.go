@@ -8,6 +8,7 @@ import (
 
 	// Import desired plugin packages here
 	"github.com/bethropolis/tide/plugins/autosave"
+	"github.com/bethropolis/tide/plugins/filetree"
 	"github.com/bethropolis/tide/plugins/wordcount"
 	// Import other plugins as they are created
 	// "github.com/bethropolis/tide/plugins/anotherplugin"
@@ -27,7 +28,7 @@ func registerPlugins(pm *plugin.Manager) error {
 	pluginConstructors := []func() plugin.Plugin{
 		wordcount.New,
 		autosave.New,
-		// anotherplugin.New,
+		filetree.New,
 	}
 
 	var finalErr error
